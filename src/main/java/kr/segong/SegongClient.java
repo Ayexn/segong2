@@ -51,7 +51,7 @@ public class SegongClient implements ClientModInitializer {
     private static final String[] NAMES = {"바이올렛", "오팔", "아다만티움"};
     private static final int[] LIMITS = {0, 200, 212, 236};          // 0 = 자동
     static final String[] GRADE_NAME = {"자동", "COMMON 200", "NORMAL 212", "RARE 236"};
-    static final String[] STYLE_NAME = {"A 카드형", "B 한 줄형", "C 슬롯 배지형"};
+    static final String[] STYLE_NAME = {"타일형", "카드형", "한 줄형", "슬롯 배지"};
     private static final long HOVER_MS = 300;                         // 화면이 없을 때 툴팁 표시 유지 시간
     private static final long FLASH_MS = 2500;                        // 알림 문구 표시 시간
 
@@ -78,8 +78,10 @@ public class SegongClient implements ClientModInitializer {
     static KeyBinding toggleKey, gradeKey, settingsKey;
     static boolean enabled = true;
     static int gradeMode = 0;
-    static int style = 0;       // 0 A카드 / 1 B한줄 / 2 C슬롯배지
+    static int style = 0;       // 0 타일 / 1 카드 / 2 한줄 / 3 슬롯배지
     static float scale = 1.0f;  // 0.7 ~ 1.5
+    static int theme = 0;       // 0 다크 약방 / 1 우드카드 / 2 크림 (카드와 설정 화면의 디자인)
+    static final String[] THEME_NAME = {"다크 약방", "우드카드", "크림"};
     static float customX = -1f, customY = -1f;   // 끌어서 옮긴 위치(화면 비율). -1 이면 자동
     private static final Map<String, Integer> learned = new HashMap<>();   // 등급 표시 문자 → 한도
 
@@ -423,6 +425,7 @@ public class SegongClient implements ClientModInitializer {
             gradeMode = Math.max(0, Math.min(3, Integer.parseInt(pr.getProperty("grade", "0"))));
             style = Math.max(0, Math.min(STYLE_NAME.length - 1, Integer.parseInt(pr.getProperty("style", "0"))));
             scale = Math.max(0.7f, Math.min(1.5f, Float.parseFloat(pr.getProperty("scale2", "1.0"))));
+            theme = Math.max(0, Math.min(THEME_NAME.length - 1, Integer.parseInt(pr.getProperty("design", "0"))));
             customX = Float.parseFloat(pr.getProperty("px", "-1"));
             customY = Float.parseFloat(pr.getProperty("py", "-1"));
             for (String k : pr.stringPropertyNames()) {
@@ -440,6 +443,7 @@ public class SegongClient implements ClientModInitializer {
             pr.setProperty("grade", String.valueOf(gradeMode));
             pr.setProperty("style", String.valueOf(style));
             pr.setProperty("scale2", String.valueOf(scale));
+            pr.setProperty("design", String.valueOf(theme));
             pr.setProperty("px", String.valueOf(customX));
             pr.setProperty("py", String.valueOf(customY));
             for (Map.Entry<String, Integer> e : learned.entrySet()) pr.setProperty("sig." + e.getKey(), String.valueOf(e.getValue()));

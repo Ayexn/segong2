@@ -8,15 +8,39 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
-/** 세공 도우미 설정 화면 (우드 & 크림 디자인). 게임 중 설정 키 또는 /segong settings 로 연다. */
+/** 세공 도우미 설정 화면 (다크 약방 · 우드카드 · 크림 디자인). 게임 중 설정 키 또는 /segong settings 로 연다. */
 class SettingsScreen extends Screen {
-    // 색 (우드 & 크림)
-    private static final int PANEL = 0xFFF3E4CF, EDGE_OUT = 0xFF3B2412, EDGE_IN = 0xFF6B4423;
-    private static final int TITLE = 0xFF6B3F17, TXT = 0xFF4A2C14, SUB = 0xFF8A6A45, LINE = 0xFFB9874F;
-    private static final int BTN = 0xFFE3C9A2, BTN_HI = 0xFFFFF2D8, BTN_LO = 0xFFB48A55, BTN_BD = 0xFF4A2C14, BTN_TX = 0xFF4A2C14;
-    private static final int SEL = 0xFFF2B631, SEL_HI = 0xFFFFE08A, SEL_LO = 0xFFB9801A, SEL_TX = 0xFF3B2412;
-    private static final int RED = 0xFFB5533C, RED_HI = 0xFFF0A08C, RED_LO = 0xFF6D2A1B;
-    private static final int TRACK = 0xFFD9BF96;
+    // 색 (테마에 따라 applyTheme() 가 채운다)
+    private int PANEL, EDGE_OUT, EDGE_IN, TITLE, TXT, SUB, LINE;
+    private int BTN, BTN_HI, BTN_LO, BTN_BD, BTN_TX, SEL, SEL_HI, SEL_LO, SEL_TX, RED, RED_HI, RED_LO, TRACK, INFO;
+    private boolean wood, apo;    // wood = 어두운 판(약방·우드카드), apo = 다크 약방
+
+    private void applyTheme() {
+        apo = SegongClient.theme == 0;
+        wood = SegongClient.theme <= 1;
+        if (apo) {    // 다크 약방
+            PANEL = Apo.FILL; EDGE_OUT = Apo.OUT; EDGE_IN = Apo.BAND;
+            TITLE = Apo.B_TXT; TXT = Apo.TXT; SUB = Apo.SUB; LINE = Apo.CURL;
+            BTN = Apo.BTN; BTN_HI = Apo.BTN_HI; BTN_LO = Apo.P_LO; BTN_BD = Apo.S_OUT; BTN_TX = Apo.TXT;
+            SEL = Apo.SEL; SEL_HI = Apo.SEL_HI; SEL_LO = Apo.P_LO; SEL_TX = Apo.SEL_TX;
+            RED = Apo.RD; RED_HI = Apo.RD_HI; RED_LO = Apo.RD_LO;
+            TRACK = Apo.TRACK; INFO = Apo.INFO;
+        } else if (wood) {   // 우드카드
+            PANEL = Overlay.W_BODY; EDGE_OUT = Overlay.W_OUT; EDGE_IN = Overlay.W_HI;
+            TITLE = Overlay.W_CREAM; TXT = Overlay.W_CREAM; SUB = Overlay.W_SUB; LINE = Overlay.W_SH;
+            BTN = 0xFFA8763E; BTN_HI = 0xFFD9A868; BTN_LO = 0xFF5A3A18; BTN_BD = Overlay.W_OUT; BTN_TX = Overlay.W_CREAM;
+            SEL = Overlay.W_GOLD; SEL_HI = 0xFFFFF0B0; SEL_LO = 0xFFA87A28; SEL_TX = Overlay.W_OUT;
+            RED = 0xFF9A3B2A; RED_HI = 0xFFD98A78; RED_LO = 0xFF5A2018;
+            TRACK = Overlay.W_SH; INFO = 0xFFE3C4FF;
+        } else {      // 크림
+            PANEL = 0xFFF3E4CF; EDGE_OUT = 0xFF3B2412; EDGE_IN = 0xFF6B4423;
+            TITLE = 0xFF6B3F17; TXT = 0xFF4A2C14; SUB = 0xFF8A6A45; LINE = 0xFFB9874F;
+            BTN = 0xFFE3C9A2; BTN_HI = 0xFFFFF2D8; BTN_LO = 0xFFB48A55; BTN_BD = 0xFF4A2C14; BTN_TX = 0xFF4A2C14;
+            SEL = 0xFFF2B631; SEL_HI = 0xFFFFE08A; SEL_LO = 0xFFB9801A; SEL_TX = 0xFF3B2412;
+            RED = 0xFFB5533C; RED_HI = 0xFFF0A08C; RED_LO = 0xFF6D2A1B;
+            TRACK = 0xFFD9BF96; INFO = 0xFF7A4DA8;
+        }
+    }
 
     private static final class Btn {
         int x, y, w, h;
@@ -49,12 +73,13 @@ class SettingsScreen extends Screen {
     @Override
     protected void init() {
         btns.clear();
+        applyTheme();
         pw = Math.min(width - 16, 400);
-        ph = Math.min(height - 16, 238);
+        ph = Math.min(height - 16, 252);
         pl = (width - pw) / 2;
         pt = (height - ph) / 2;
-        cx0 = pl + 92;
-        int y = pt + 38, gap = 25;
+        cx0 = pl + (apo ? 96 : 92);
+        int y = pt + (apo ? 34 : 38), gap = 25;
 
         // 동작
         int x = cx0;
@@ -67,6 +92,14 @@ class SettingsScreen extends Screen {
         for (int i = 0; i < SegongClient.STYLE_NAME.length; i++) {
             final int k = i;
             b = add(x, y, SegongClient.STYLE_NAME[i], () -> SegongClient.style == k, () -> { SegongClient.style = k; SegongClient.save(); }, false);
+            x += b.w + 4;
+        }
+
+        // 디자인 (테마)
+        y += gap; x = cx0;
+        for (int i = 0; i < SegongClient.THEME_NAME.length; i++) {
+            final int k = i;
+            b = add(x, y, SegongClient.THEME_NAME[i], () -> SegongClient.theme == k, () -> { SegongClient.theme = k; SegongClient.save(); init(); }, false);
             x += b.w + 4;
         }
 
@@ -88,11 +121,11 @@ class SettingsScreen extends Screen {
         }
 
         // 아래 버튼
-        int by = pt + ph - 28;
-        add(pl + 14, by, "학습한 등급 표시 지우기", () -> false, () -> SegongClient.resetLearned(), true);
+        int by = pt + ph - (apo ? 34 : 28), sideM = apo ? 18 : 14;
+        add(pl + sideM, by, "학습한 등급 표시 지우기", () -> false, () -> SegongClient.resetLearned(), true);
         Btn close = add(0, by, "닫기", () -> false, this::close, false);
         close.w = 56;
-        close.x = pl + pw - 14 - close.w;
+        close.x = pl + pw - sideM - close.w;
     }
 
     @Override
@@ -113,7 +146,7 @@ class SettingsScreen extends Screen {
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         if (button == 0) {
-            for (Btn b : btns) {
+            for (Btn b : new ArrayList<>(btns)) {
                 if (in(b, mx, my)) { b.act.run(); return true; }
             }
             if (mx >= sliderX - 2 && mx <= sliderX + sliderW + 2 && my >= sliderY - 3 && my <= sliderY + sliderH + 3) {
@@ -150,30 +183,59 @@ class SettingsScreen extends Screen {
         super.render(c, mx, my, delta);
 
         // 패널
-        c.fill(pl - 3, pt - 3, pl + pw + 3, pt + ph + 3, EDGE_OUT);
-        c.fill(pl - 2, pt - 2, pl + pw + 2, pt + ph + 2, EDGE_IN);
-        c.fill(pl, pt, pl + pw, pt + ph, PANEL);
-
         String title = "세공 도우미 설정";
-        c.drawText(textRenderer, title, pl + (pw - textRenderer.getWidth(title)) / 2, pt + 9, TITLE, false);
-        c.fill(pl + pw / 2 - 70, pt + 22, pl + pw / 2 + 70, pt + 23, LINE);
+        String ver = version();
+        if (apo) {
+            c.getMatrices().push();
+            c.getMatrices().translate((float) pl, (float) pt, 0f);
+            Apo.frame(c, pw, ph, false);
+            c.getMatrices().pop();
+            int bw = 150, bx = pl + (pw - bw) / 2;
+            Apo.banner(c, bx, pt + 4, bw, 17);
+            c.drawText(textRenderer, title, bx + (bw - textRenderer.getWidth(title)) / 2, pt + 8, TITLE, false);
+            if (!ver.isEmpty()) c.drawText(textRenderer, "v" + ver, pl + pw - 24 - textRenderer.getWidth("v" + ver), pt + 10, SUB, true);
+        } else {
+            if (wood) {
+                c.getMatrices().push();
+                c.getMatrices().translate((float) pl, (float) pt, 0f);
+                Overlay.woodFrame(c, pw, ph);
+                c.getMatrices().pop();
+            } else {
+                c.fill(pl - 3, pt - 3, pl + pw + 3, pt + ph + 3, EDGE_OUT);
+                c.fill(pl - 2, pt - 2, pl + pw + 2, pt + ph + 2, EDGE_IN);
+                c.fill(pl, pt, pl + pw, pt + ph, PANEL);
+            }
+            c.drawText(textRenderer, title, pl + (pw - textRenderer.getWidth(title)) / 2, pt + 9, TITLE, wood);
+            c.fill(pl + pw / 2 - 70, pt + 22, pl + pw / 2 + 70, pt + 23, LINE);
+            if (!ver.isEmpty()) c.drawText(textRenderer, "v" + ver, pl + pw - 10 - textRenderer.getWidth("v" + ver), pt + 9, SUB, false);
+        }
 
         // 줄 이름
-        int gap = 25, y = pt + 38;
-        String[] labels = {"동작", "표시 방식", "글자 크기", "위치", "등급"};
-        String[] subs = {null, null, null, "세공 화면에서 카드를 끌어 이동", "자동이 안 될 때만"};
+        int gap = 25, y = pt + (apo ? 34 : 38), lx = pl + (apo ? 18 : 14);
+        String[] labels = {"동작", "표시 방식", "디자인", "글자 크기", "위치", "등급"};
+        String[] subs = {null, null, "카드와 이 창", null, "카드를 끌어서", "안 읽힐 때만"};
         for (int i = 0; i < labels.length; i++) {
-            c.drawText(textRenderer, labels[i], pl + 14, y + gap * i + 5 - (subs[i] != null ? 4 : 0), TXT, false);
-            if (subs[i] != null) c.drawText(textRenderer, subs[i], pl + 14, y + gap * i + 7, SUB, false);
+            c.drawText(textRenderer, labels[i], lx, y + gap * i + (subs[i] != null ? 0 : 5), TXT, wood);
+            if (subs[i] != null) c.drawText(textRenderer, subs[i], lx, y + gap * i + 9, SUB, wood);
         }
 
         // 슬라이더
-        c.fill(sliderX - 1, sliderY - 1, sliderX + sliderW + 1, sliderY + sliderH + 1, BTN_BD);
-        c.fill(sliderX, sliderY, sliderX + sliderW, sliderY + sliderH, TRACK);
         float t = (SegongClient.scale - 0.7f) / 0.8f;
         int hx = sliderX + Math.round(t * sliderW);
-        c.fill(sliderX, sliderY, hx, sliderY + sliderH, SEL);
-        bevel(c, hx - 4, sliderY - 2, 8, sliderH + 4, BTN, BTN_HI, BTN_LO, BTN_BD);
+        if (apo) {
+            c.fill(sliderX - 1, sliderY - 1, sliderX + sliderW + 1, sliderY + sliderH + 1, Apo.S_OUT);
+            c.fill(sliderX, sliderY, sliderX + sliderW, sliderY + sliderH, TRACK);
+            c.fill(sliderX, sliderY, hx, sliderY + sliderH, Apo.SLIDER);
+            c.fill(sliderX, sliderY, hx, sliderY + 1, 0x55FFFFFF);
+            Apo.circle(c, hx, sliderY + sliderH / 2, 13, Apo.OUT);
+            Apo.circle(c, hx, sliderY + sliderH / 2, 11, Apo.GOLD);
+            Apo.circle(c, hx, sliderY + sliderH / 2, 7, Apo.GOLD_HI);
+        } else {
+            c.fill(sliderX - 1, sliderY - 1, sliderX + sliderW + 1, sliderY + sliderH + 1, BTN_BD);
+            c.fill(sliderX, sliderY, sliderX + sliderW, sliderY + sliderH, TRACK);
+            c.fill(sliderX, sliderY, hx, sliderY + sliderH, SEL);
+            bevel(c, hx - 4, sliderY - 2, 8, sliderH + 4, BTN, BTN_HI, BTN_LO, BTN_BD);
+        }
         c.drawText(textRenderer, String.format("%.2f배", SegongClient.scale), sliderX + sliderW + 8, sliderY + 3, TXT, false);
 
         // 버튼
@@ -185,20 +247,36 @@ class SettingsScreen extends Screen {
             else if (sel) { fill = SEL; hi = SEL_HI; lo = SEL_LO; tx = SEL_TX; }
             else { fill = BTN; hi = BTN_HI; lo = BTN_LO; tx = BTN_TX; }
             if (hov && !sel) { fill = lighten(fill); }
-            bevel(c, b.x, b.y, b.w, b.h, fill, hi, lo, BTN_BD);
-            c.drawText(textRenderer, b.label, b.x + (b.w - textRenderer.getWidth(b.label)) / 2, b.y + 5, tx, false);
+            if (apo) {
+                int out = b.red ? Apo.RD_OUT : Apo.S_OUT;
+                Apo.pill(c, b.x, b.y, b.w, b.h, fill, out, hi, lo, 2);
+                c.drawText(textRenderer, b.label, b.x + (b.w - textRenderer.getWidth(b.label)) / 2, b.y + (sel ? 5 : 4), tx, !sel);
+            } else {
+                bevel(c, b.x, b.y, b.w, b.h, fill, hi, lo, BTN_BD);
+                c.drawText(textRenderer, b.label, b.x + (b.w - textRenderer.getWidth(b.label)) / 2, b.y + 5, tx, wood && !sel);
+            }
         }
 
         // 아래 안내
         long[] n = SegongClient.countOrbs(client);
         String l1 = "인벤토리 광채  바이올렛 " + n[0] + " · 오팔 " + n[1] + " · 아다만티움 " + n[2];
-        c.drawText(textRenderer, l1, pl + 14, pt + ph - 52, 0xFF7A4DA8, false);
+        c.drawText(textRenderer, l1, lx, pt + ph - (apo ? 56 : 52), INFO, wood);
         String l2 = SegongClient.keyName(SegongClient.toggleKey) + " 켜기/끄기 · " + SegongClient.keyName(SegongClient.gradeKey)
                 + " 등급 · " + SegongClient.keyName(SegongClient.settingsKey) + " 설정 (키는 조작 설정에서 변경)";
-        c.drawText(textRenderer, l2, pl + 14, pt + ph - 40, SUB, false);
+        c.drawText(textRenderer, l2, lx, pt + ph - (apo ? 44 : 40), SUB, wood);
 
         // 실제 위치 미리보기
         Overlay.render(client, c, SegongClient.sampleView(), -1, -1, false);
+    }
+
+    /** 설치된 모드 버전 (jar 이름과 같은 값) */
+    private static String version() {
+        try {
+            return net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("segong")
+                    .map(m -> m.getMetadata().getVersion().getFriendlyString()).orElse("");
+        } catch (Throwable e) {
+            return "";
+        }
     }
 
     private static int lighten(int c) {
