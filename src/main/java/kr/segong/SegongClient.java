@@ -24,6 +24,8 @@ import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.tooltip.TooltipType;
+import net.minecraft.nbt.NbtElement;
+import net.minecraft.nbt.StringNbtReader;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.text.Style;
@@ -85,7 +87,9 @@ public class SegongClient implements ClientModInitializer {
     static final String[] THEME_NAME = {"다크 약방", "우드카드", "크림"};
     static boolean icons = true;               // 광채 아이콘 표시
     static boolean lock = true;                // 추천 고정 (처음 정한 목표를 광채 넣는 동안 유지)
-    static final ItemStack[] orbIcon = new ItemStack[3];   // 내 인벤토리에서 본 광채 아이템 (그림 표시용)
+    static final ItemStack[] orbIcon = new ItemStack[3];   // 본 적 있는 광채 아이템 (그림 표시용)
+    private static final String[] orbSnbt = new String[3];  // 그 아이템을 글자로 저장한 것 (설정 파일 icon.0~2). 게임을 껐다 켜도 그림을 쓰려고
+    private static final boolean[] orbRestoreFailed = new boolean[3];
     static boolean tallySep;                                    // 오늘 세공 횟수를 카드와 따로 띄우기
     static float tallyX = -1f, tallyY = -1f;                    // 따로 띄운 알약 위치(화면 비율). -1 이면 자동
     private static long lastGemAt;                              // 가장 최근에 보석을 본 시각
@@ -129,7 +133,45 @@ public class SegongClient implements ClientModInitializer {
     static ItemStack iconFor(int k) {
         if (!icons || Guard.iconBroken) return null;
         ItemStack s = orbIcon[k];
+        if (s == null || s.isEmpty()) {
+            restoreIcon(k);      // 지금 인벤토리에 없어도, 전에 본 그림이 저장돼 있으면 꺼내 쓴다
+            s = orbIcon[k];
+        }
         return (s == null || s.isEmpty()) ? null : s;
+    }
+
+    /** 저장해 둔 광채 그림을 되살린다. 게임에 들어와 있어야 읽을 수 있고, 실패하면 다시 시도하지 않는다. */
+    private static void restoreIcon(int k) {
+        String snbt = orbSnbt[k];
+        if (snbt == null || snbt.isEmpty() || orbRestoreFailed[k]) return;
+        MinecraftClient c = MinecraftClient.getInstance();
+        if (c == null || c.world == null) return;
+        try {
+            NbtElement nbt = StringNbtReader.parse(snbt);
+            Optional<ItemStack> st = ItemStack.fromNbt(c.world.getRegistryManager(), nbt);
+            if (st.isPresent() && !st.get().isEmpty()) orbIcon[k] = st.get();
+            else orbRestoreFailed[k] = true;
+        } catch (Throwable e) {
+            orbRestoreFailed[k] = true;
+        }
+    }
+
+    /** 광채 그림을 하나 기억하고 설정 파일에도 저장한다 (처음 볼 때 한 번만). */
+    private static void rememberIcon(MinecraftClient client, int k, ItemStack s) {
+        if (orbIcon[k] != null && !orbIcon[k].isEmpty()) return;
+        ItemStack one = s.copyWithCount(1);
+        orbIcon[k] = one;
+        try {
+            if (client != null && client.world != null) {
+                String snbt = one.toNbt(client.world.getRegistryManager()).asString();
+                if (!snbt.equals(orbSnbt[k])) {
+                    orbSnbt[k] = snbt;
+                    save();
+                }
+            }
+        } catch (Throwable e) {
+            // 저장하지 못해도 이번 접속 동안은 그림을 쓴다
+        }
     }
 
     /** 오류로 꺼진 상태를 풀고 다시 시작한다. */
@@ -420,7 +462,7 @@ public class SegongClient implements ClientModInitializer {
                 String name = st.getName().getString();
                 if (name.contains("광채")) {
                     for (int k = 0; k < 3; k++) {
-                        if (name.contains(NAMES[k])) { ui[k] += st.getCount(); break; }
+                        if (name.contains(NAMES[k])) { ui[k] += st.getCount(); rememberIcon(client, k, st); break; }
                     }
                 }
                 if (moduleGem == null) {
@@ -465,7 +507,7 @@ public class SegongClient implements ClientModInitializer {
             for (int k = 0; k < 3; k++) {
                 if (name.contains(NAMES[k])) {
                     n[k] += s.getCount();
-                    if (orbIcon[k] == null || orbIcon[k].isEmpty()) orbIcon[k] = s.copyWithCount(1);   // 그림용으로 하나 기억
+                    rememberIcon(client, k, s);      // 그림용으로 하나 기억 (처음 한 번만)
                     break;
                 }
             }
@@ -606,7 +648,9 @@ public class SegongClient implements ClientModInitializer {
         out.add(" 세공 횟수: " + Tally.describe(System.currentTimeMillis()) + " · 표시 " + (tallySep ? "따로 띄움" : "카드 안"));
         long[] inv = countOrbs(mc, true);
         out.add(" 인벤토리 광채(실제): 바이올렛/오팔/아다만티움 " + triple(inv[0], inv[1], inv[2]));
-        out.add(" 광채 그림을 본 적: " + (orbIcon[0] != null ? "O" : "X") + "/" + (orbIcon[1] != null ? "O" : "X") + "/" + (orbIcon[2] != null ? "O" : "X"));
+        out.add(" 광채 그림을 본 적: " + (orbIcon[0] != null ? "O" : "X") + "/" + (orbIcon[1] != null ? "O" : "X") + "/" + (orbIcon[2] != null ? "O" : "X")
+                + " · 저장됨 " + (orbSnbt[0] != null ? "O" : "X") + "/" + (orbSnbt[1] != null ? "O" : "X") + "/" + (orbSnbt[2] != null ? "O" : "X")
+                + (orbRestoreFailed[0] || orbRestoreFailed[1] || orbRestoreFailed[2] ? " · 저장된 그림 읽기 실패 있음" : ""));
         View v = lastView;
         if (v == null) {
             out.add(" 아직 읽은 보석이 없어요. 세공 화면에서 보석이 보이는 상태로 한 번 연 뒤 다시 입력하세요");
@@ -689,6 +733,7 @@ public class SegongClient implements ClientModInitializer {
             Tally.gapMs = Math.max(0, Math.min(10000, Long.parseLong(pr.getProperty("tally.gap", "350"))));
             Tally.day = pr.getProperty("tally.day", "");
             Tally.count = Math.max(0, Integer.parseInt(pr.getProperty("tally.count", "0")));
+            for (int k = 0; k < 3; k++) orbSnbt[k] = pr.getProperty("icon." + k);
             tallySep = "true".equals(pr.getProperty("tally.sep", "false"));
             tallyX = Float.parseFloat(pr.getProperty("tally.px", "-1"));
             tallyY = Float.parseFloat(pr.getProperty("tally.py", "-1"));
@@ -717,6 +762,7 @@ public class SegongClient implements ClientModInitializer {
             pr.setProperty("tally.gap", String.valueOf(Tally.gapMs));
             pr.setProperty("tally.day", Tally.day);
             pr.setProperty("tally.count", String.valueOf(Tally.count));
+            for (int k = 0; k < 3; k++) if (orbSnbt[k] != null) pr.setProperty("icon." + k, orbSnbt[k]);
             pr.setProperty("tally.sep", String.valueOf(tallySep));
             pr.setProperty("tally.px", String.valueOf(tallyX));
             pr.setProperty("tally.py", String.valueOf(tallyY));
