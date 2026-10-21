@@ -22,6 +22,11 @@ final class Overlay {
     private static int hitX, hitY, hitW, hitH;
     private static boolean dragging, prevDown;
     private static int grabDX, grabDY;
+    // "오늘 세공 횟수" 알약을 카드와 따로 띄울 때: 알약의 위치와 끌기 상태 (카드와 별개)
+    private static int tHitX, tHitY, tHitW, tHitH;
+    private static boolean tDragging, tPrevDown;
+    private static int tGrabDX, tGrabDY;
+    private static int cardBottom;      // 마지막으로 그린 카드의 아래쪽 y (한 줄형일 때 알약 기본 위치용)
 
     private Overlay() {}
 
@@ -40,20 +45,41 @@ final class Overlay {
             if (!on) return;
             MatrixStack m = ctx.getMatrices();
             m.push();
-            m.translate((float) x, (float) y, 0f);
-            m.scale(k, k, 1f);
-            ctx.drawText(tr, s, 0, 0, c, false);
-            m.pop();
+            try {
+                m.translate((float) x, (float) y, 0f);
+                m.scale(k, k, 1f);
+                ctx.drawText(tr, s, 0, 0, c, false);
+            } finally {
+                m.pop();
+            }
         }
         void bigRight(String s, int right, int y, int c) {
             if (!on) return;
             int w = tr.getWidth(s) * 2;
             MatrixStack m = ctx.getMatrices();
             m.push();
-            m.translate((float) (right - w), (float) y, 0f);
-            m.scale(2f, 2f, 1f);
-            ctx.drawText(tr, s, 0, 0, c, true);
-            m.pop();
+            try {
+                m.translate((float) (right - w), (float) y, 0f);
+                m.scale(2f, 2f, 1f);
+                ctx.drawText(tr, s, 0, 0, c, true);
+            } finally {
+                m.pop();
+            }
+        }
+        /** 아이템 그림 (가운데 cx, cy 기준, 16칸 그림을 k배로 줄여 그린다) */
+        void item(ItemStack st, int cx, int cy, float k) {
+            if (!on) return;
+            MatrixStack m = ctx.getMatrices();
+            m.push();
+            try {
+                m.translate(cx - 8f * k, cy - 8f * k, 0f);
+                m.scale(k, k, 1f);
+                ctx.drawItem(st, 0, 0);
+            } catch (Throwable e) {
+                SegongClient.iconFailed(e);     // 아이콘만 끄고 나머지는 계속 그린다
+            } finally {
+                m.pop();
+            }
         }
         void frame(int w, int h) {
             rect(0, 0, w, h, 0xE0101420);
@@ -71,13 +97,66 @@ final class Overlay {
         };
     }
 
-    static void clearHit() { hitW = 0; hitH = 0; }
+    static void clearHit() { hitW = 0; hitH = 0; tHitW = 0; tHitH = 0; }
 
-    static boolean hit(double mx, double my) {
-        return hitW > 0 && mx >= hitX && mx < hitX + hitW && my >= hitY && my < hitY + hitH;
+    /** 광채 그림 (설정이 꺼져 있거나 인벤토리에서 못 봤으면 null) */
+    private static ItemStack icon(int k) {
+        return SegongClient.iconFor(k);
     }
 
-    static boolean isDragging() { return dragging; }
+    /** 오른쪽 아래 문구: 보유가 모자라면 부족 개수, 쓸 광채가 없으면 안내 */
+    static String usedLabel(SegongClient.View v) {
+        if (v.r.missing > 0) return "광채 " + v.r.missing + "개 부족";
+        return v.r.n == 0 ? "추가 필요 없음" : "광채 " + v.r.n + "개";
+    }
+
+    /** 오른쪽 아래 문구 색: 모자라면 빨간색 */
+    static int usedCol(SegongClient.View v, int normal, int red) {
+        return v.r.missing > 0 ? red : normal;
+    }
+
+    /** 오늘 세공 횟수 문구 (v.tally 가 0 이상일 때만 표시) */
+    static String tallyLabel(SegongClient.View v) {
+        return "오늘 세공 " + v.tally + "회";
+    }
+
+    /** 가운데 cx, 위 y 에 놓는 "오늘 세공 N회" 알약 (높이 14). 다크 약방은 등급 알약과 같은 금색. */
+    private static void tallyChip(Pen p, SegongClient.View v, int cx, int y) {
+        chipAt(p, tallyLabel(v), cx, y);
+    }
+
+    private static void chipAt(Pen p, String s, int cx, int y) {
+        int w = p.tr.getWidth(s) + 14, x = cx - w / 2;
+        if (SegongClient.theme == 0) {
+            if (p.on) Apo.pill(p.ctx, x, y, w, 14, Apo.P_FILL, Apo.OUT, Apo.P_HI, Apo.P_LO, 1);
+            p.plain(s, x + 7, y + 3, Apo.P_TXT);
+        } else {
+            p.rect(x, y, x + w, y + 14, SegongClient.theme == 1 ? W_OUT : T_EDGE_OUT);
+            p.rect(x + 1, y + 1, x + w - 1, y + 13, T_GOLD);
+            p.plain(s, x + 7, y + 3, T_EDGE_OUT);
+        }
+    }
+
+    /** 추천 개수가 가진 개수와 같거나 많으면(= 다 쓰는 경우) 보유 글자를 주황색으로 */
+    static int stockCol(SegongClient.View v, int k, int normal) {
+        if (v.r == null) return normal;
+        int c = k == 0 ? v.r.a : k == 1 ? v.r.b : v.r.c;
+        if (c <= 0 || c < v.stock[k]) return normal;
+        boolean light = SegongClient.theme == 2 && SegongClient.style == 0;    // 밝은 바탕(크림 타일형)
+        // 광채가 모자라서 한도까지 못 채우는데, 이 광채가 더 있었다면 더 쓸 수 있는 경우는 빨간색
+        if (v.r.missing > 0 && v.stats[k] + c * 10 < 100) return light ? T_RED : 0xFFFF9A8A;
+        return light ? 0xFFB86A00 : 0xFFFFC060;
+    }
+
+    static boolean hit(double mx, double my) {
+        return (hitW > 0 && mx >= hitX && mx < hitX + hitW && my >= hitY && my < hitY + hitH) || tHit(mx, my);
+    }
+
+    private static boolean tHit(double mx, double my) {
+        return tHitW > 0 && mx >= tHitX && mx < tHitX + tHitW && my >= tHitY && my < tHitY + tHitH;
+    }
+
+    static boolean isDragging() { return dragging || tDragging; }
 
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -103,7 +182,7 @@ final class Overlay {
                 // 읽지 못하면 끌기 없이 표시만
             }
             boolean inside = mx >= xy[0] && mx < xy[0] + pw && my >= xy[1] && my < xy[1] + ph;
-            if (down && !prevDown && inside) { dragging = true; grabDX = mx - xy[0]; grabDY = my - xy[1]; }
+            if (down && !prevDown && inside && !tHit(mx, my)) { dragging = true; grabDX = mx - xy[0]; grabDY = my - xy[1]; }   // 알약이 위에 있으면 알약이 먼저
             boolean wasDragging = dragging;
             if (!down) dragging = false;
             if (dragging) {
@@ -118,12 +197,16 @@ final class Overlay {
             hover = inside || dragging;
             hitX = xy[0]; hitY = xy[1]; hitW = pw; hitH = ph;
         }
+        cardBottom = xy[1] + ph;
         MatrixStack m = ctx.getMatrices();
         m.push();
-        m.translate((float) xy[0], (float) xy[1], 0f);
-        m.scale(s, s, 1f);
-        layout(new Pen(mc.textRenderer, ctx, true), v, style, sz);
-        m.pop();
+        try {
+            m.translate((float) xy[0], (float) xy[1], 0f);
+            m.scale(s, s, 1f);
+            layout(new Pen(mc.textRenderer, ctx, true), v, style, sz);
+        } finally {
+            m.pop();      // 그리다 오류가 나도 행렬은 원래대로 돌려놓는다
+        }
         if (hover) {
             int g = 0xFFFFD76A;
             ctx.fill(xy[0] - 1, xy[1] - 1, xy[0] + pw + 1, xy[1], g);
@@ -133,6 +216,68 @@ final class Overlay {
             if (xy[1] >= 11) ctx.drawText(mc.textRenderer, "끌어서 이동", xy[0], xy[1] - 10, 0xFFFFD76A, true);
         }
         if (style == 3) badges(mc, ctx, v);
+    }
+
+    /**
+     * "오늘 세공 N회" 알약만 카드와 따로 그린다 (설정에서 '따로 띄우기'를 켰을 때).
+     * 위치는 알약 혼자 끌어서 옮기고(tallyX/tallyY), 정하지 않았으면 화면 위 가운데
+     * (한 줄형이면 카드 바로 아래)에 놓는다.
+     */
+    static void renderTally(MinecraftClient mc, DrawContext ctx, int count, int mx, int my, boolean interactive) {
+        float s = SegongClient.scale;
+        String label = "오늘 세공 " + count + "회";
+        int cw = mc.textRenderer.getWidth(label) + 14;
+        int pw = Math.round(cw * s), ph = Math.round(14 * s);
+        int sw = mc.getWindow().getScaledWidth(), sh = mc.getWindow().getScaledHeight();
+        int[] xy;
+        if (SegongClient.tallyX >= 0 && SegongClient.tallyY >= 0) {
+            xy = new int[]{clamp(Math.round(SegongClient.tallyX * sw), 0, Math.max(0, sw - pw)),
+                           clamp(Math.round(SegongClient.tallyY * sh), 0, Math.max(0, sh - ph))};
+        } else {
+            int y = (SegongClient.style == 2 && cardBottom > 0) ? cardBottom + 4 : 6;
+            xy = new int[]{(sw - pw) / 2, clamp(y, 0, Math.max(0, sh - ph))};
+        }
+        boolean hover = false;
+        if (interactive) {
+            boolean down = false;
+            try {
+                down = GLFW.glfwGetMouseButton(mc.getWindow().getHandle(), GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+            } catch (Throwable e) {
+                // 읽지 못하면 끌기 없이 표시만
+            }
+            boolean inside = mx >= xy[0] && mx < xy[0] + pw && my >= xy[1] && my < xy[1] + ph;
+            if (down && !tPrevDown && inside && !dragging) { tDragging = true; tGrabDX = mx - xy[0]; tGrabDY = my - xy[1]; }
+            boolean was = tDragging;
+            if (!down) tDragging = false;
+            if (tDragging) {
+                int nx = clamp(mx - tGrabDX, 0, Math.max(0, sw - pw)), ny = clamp(my - tGrabDY, 0, Math.max(0, sh - ph));
+                xy = new int[]{nx, ny};
+                SegongClient.tallyX = (float) nx / sw;
+                SegongClient.tallyY = (float) ny / sh;
+            } else if (was) {
+                SegongClient.save();
+            }
+            tPrevDown = down;
+            hover = inside || tDragging;
+            tHitX = xy[0]; tHitY = xy[1]; tHitW = pw; tHitH = ph;
+        }
+        MatrixStack m = ctx.getMatrices();
+        m.push();
+        try {
+            m.translate((float) xy[0], (float) xy[1], 0f);
+            m.scale(s, s, 1f);
+            chipAt(new Pen(mc.textRenderer, ctx, true), label, cw / 2, 0);
+        } finally {
+            m.pop();
+        }
+        if (hover) {
+            int g = 0xFFFFD76A;
+            ctx.fill(xy[0] - 1, xy[1] - 1, xy[0] + pw + 1, xy[1], g);
+            ctx.fill(xy[0] - 1, xy[1] + ph, xy[0] + pw + 1, xy[1] + ph + 1, g);
+            ctx.fill(xy[0] - 1, xy[1] - 1, xy[0], xy[1] + ph + 1, g);
+            ctx.fill(xy[0] + pw, xy[1] - 1, xy[0] + pw + 1, xy[1] + ph + 1, g);
+            ctx.drawText(mc.textRenderer, "끌어서 이동", xy[0], xy[1] >= 11 ? xy[1] - 10 : xy[1] + ph + 2, 0xFFFFD76A, true);
+        }
     }
 
     private static int[] anchor(int pos, int style, int w, int h, int sw, int sh) {
@@ -267,12 +412,14 @@ final class Overlay {
             return new int[]{w, y + (apo ? 12 : 8)};
         }
         int[] cnt = {v.r.a, v.r.b, v.r.c};
-        int tileW = (w - 2 * m - 8) / 3, tileH = 56, ty = 22 + top;
+        int tileW = (w - 2 * m - 8) / 3, tileH = apo ? 64 : 56, ty = 22 + top;
         for (int k = 0; k < 3; k++) {
             int tx = m + k * (tileW + 4);
             if (apo) {
                 if (p.on) Apo.slot(p.ctx, tx, ty, tileW, tileH);
-                p.rect(tx + 3, ty + 3, tx + tileW - 3, ty + 6, T_BAR[k]);
+                ItemStack ic = icon(k);
+                if (ic != null) p.item(ic, tx + tileW / 2, ty + 10, 0.75f);
+                else if (p.on) Apo.dot(p.ctx, tx + tileW / 2, ty + 9, COL[k]);
             } else if (wood) {
                 if (p.on) woodSlot(p.ctx, tx, ty, tileW, tileH);
                 p.rect(tx + 2, ty + 3, tx + tileW - 2, ty + 6, T_BAR[k]);
@@ -281,20 +428,21 @@ final class Overlay {
                 p.rect(tx + 1, ty + 1, tx + tileW - 1, ty + tileH - 1, T_TILE);
                 p.rect(tx + 1, ty + 1, tx + tileW - 1, ty + 4, T_BAR[k]);
             }
-            if (wood) p.text(NAME[k], tx + (tileW - p.tr.getWidth(NAME[k])) / 2, ty + 8, cCol[k]);
+            int nameY = apo ? 17 : 8, numY = apo ? 26 : 19;
+            if (wood) p.text(NAME[k], tx + (tileW - p.tr.getWidth(NAME[k])) / 2, ty + nameY, cCol[k]);
             else p.plainCenter(NAME[k], tx + tileW / 2, ty + 7, cCol[k]);
             String num = String.valueOf(cnt[k]);
             int unit = p.tr.getWidth("개");
             int total = p.tr.getWidth(num) * 3 + 2 + unit;
             int nx = tx + (tileW - total) / 2;
-            p.scaled(num, nx, ty + 19, cCol[k], 3f);
-            p.plain("개", nx + p.tr.getWidth(num) * 3 + 2, ty + 31, cCol[k]);
-            p.plainCenter("보유 " + v.stock[k], tx + tileW / 2, ty + tileH - 11, cSub);
+            p.scaled(num, nx, ty + numY, cCol[k], 3f);
+            p.plain("개", nx + p.tr.getWidth(num) * 3 + 2, ty + numY + 12, cCol[k]);
+            p.plainCenter("보유 " + v.stock[k], tx + tileW / 2, ty + tileH - 11, stockCol(v, k, cSub));
         }
         int y = ty + tileH + 6;
         if (wood) p.text("합 " + v.r.sum + " / " + v.lim, m, y, cOk); else p.plain("합 " + v.r.sum + " / " + v.lim, m, y, cOk);
-        String right = "광채 " + v.r.n + "개";
-        p.plain(right, w - m - p.tr.getWidth(right), y, cSub);
+        String right = usedLabel(v);
+        p.plain(right, w - m - p.tr.getWidth(right), y, usedCol(v, cSub, cRed));
         y += 12;
         p.rect(m, y, w - m, y + 8, cEdge);
         p.rect(m + 1, y + 1, w - m - 1, y + 7, apo ? Apo.TRACK : wood ? W_SH : T_TRACK);
@@ -307,7 +455,13 @@ final class Overlay {
         p.plainCenter(LABEL[1] + " " + after[1], w / 2, y, cTxt);
         String last = LABEL[2] + " " + after[2];
         p.plain(last, w - bm - p.tr.getWidth(last), y, cTxt);
-        return new int[]{w, y + (apo ? 20 : wood ? 19 : 16)};
+        int endY = y + (apo ? 20 : wood ? 19 : 16);
+        if (v.tally >= 0) {
+            int cy = y + (apo ? 14 : wood ? 12 : 11);
+            tallyChip(p, v, w / 2, cy);
+            endY = cy + 14 + (apo ? 9 : wood ? 8 : 6);
+        }
+        return new int[]{w, endY};
     }
 
     // ---------------------------------------------------------------- A 카드형 (다크 약방)
@@ -333,9 +487,12 @@ final class Overlay {
         int[] cnt = {v.r.a, v.r.b, v.r.c};
         for (int k = 0; k < 3; k++) {
             int y0 = 24 + 20 * k;
-            if (p.on) { Apo.slot(p.ctx, 10, y0, 164, 18); Apo.medal(p.ctx, 21, y0 + 9, 11, COL[k]); }
+            if (p.on) Apo.slot(p.ctx, 10, y0, 164, 18);
+            ItemStack ic = icon(k);
+            if (ic != null) p.item(ic, 20, y0 + 9, 0.75f);
+            else if (p.on) Apo.medal(p.ctx, 21, y0 + 9, 11, COL[k]);
             p.text(NAME[k], 31, y0 + 5, W_COL[k]);
-            p.text("보유 " + v.stock[k], 94, y0 + 5, Apo.SUB);
+            p.text("보유 " + v.stock[k], 94, y0 + 5, stockCol(v, k, Apo.SUB));
             p.bigRight(String.valueOf(cnt[k]), 170, y0 + 1, W_COL[k]);
         }
         // 장식 구분선
@@ -345,8 +502,10 @@ final class Overlay {
         for (int k = 0; k < 3; k++) {
             int y = 94 + 12 * k;
             int cur = st[k], after = Math.min(100, cur + cnt[k] * 10);
-            if (p.on) Apo.dot(p.ctx, 15, y + 4, COL[k]);
-            p.text(LABEL[k], 23, y, Apo.SUB);
+            ItemStack ic2 = icon(k);
+            if (ic2 != null) p.item(ic2, 15, y + 4, 0.65f);
+            else if (p.on) Apo.dot(p.ctx, 15, y + 4, COL[k]);
+            p.text(LABEL[k], 24, y, Apo.SUB);
             p.rect(41, y + 1, 123, y + 8, Apo.S_OUT);
             p.rect(42, y + 2, 122, y + 7, Apo.TRACK);
             p.rect(42, y + 2, 42 + 80 * after / 100, y + 7, (0x88 << 24) | (COL[k] & 0xFFFFFF));
@@ -357,7 +516,11 @@ final class Overlay {
             p.textRight(cur + " → " + after, w - 14, y, Apo.TXT);
         }
         p.text("합 " + v.r.sum + " / " + v.lim, 18, 137, Apo.OK);
-        p.textRight("광채 " + v.r.n + "개", w - 18, 137, Apo.SUB);
+        p.textRight(usedLabel(v), w - 18, 137, usedCol(v, Apo.SUB, Apo.RED));
+        if (v.tally >= 0) {
+            tallyChip(p, v, w / 2, 150);
+            return new int[]{w, 174};
+        }
         return new int[]{w, 156};
     }
 
@@ -387,7 +550,7 @@ final class Overlay {
             if (p.on) woodSlot(p.ctx, 8, y0, 168, 17);
             p.rect(13, y0 + 5, 19, y0 + 11, T_BAR[k]);
             p.text(NAME[k], 23, y0 + 5, W_COL[k]);
-            p.text("보유 " + v.stock[k], 92, y0 + 5, W_SUB);
+            p.text("보유 " + v.stock[k], 92, y0 + 5, stockCol(v, k, W_SUB));
             p.bigRight(String.valueOf(cnt[k]), 170, y0 + 1, W_COL[k]);
         }
         p.rect(8, 86, 176, 87, W_SH);
@@ -402,7 +565,11 @@ final class Overlay {
             p.textRight(cur + " → " + after, w - 10, y, W_CREAM);
         }
         p.text("합 " + v.r.sum + " / " + v.lim, 10, 130, W_OK);
-        p.textRight("광채 " + v.r.n + "개", w - 10, 130, W_SUB);
+        p.textRight(usedLabel(v), w - 10, 130, usedCol(v, W_SUB, W_RED));
+        if (v.tally >= 0) {
+            tallyChip(p, v, w / 2, 145);
+            return new int[]{w, 166};
+        }
         return new int[]{w, 146};
     }
 
@@ -427,7 +594,7 @@ final class Overlay {
             int y0 = y;
             p.rect(6, y0 + 6, 12, y0 + 12, COL[k]);
             p.text(NAME[k], 16, y0 + 6, COL[k]);
-            p.text("보유 " + v.stock[k], 84, y0 + 7, GRAY);
+            p.text("보유 " + v.stock[k], 84, y0 + 7, stockCol(v, k, GRAY));
             p.bigRight(String.valueOf(cnt[k]), w - 6, y0 + 2, COL[k]);
             y += 19;
         }
@@ -444,54 +611,115 @@ final class Overlay {
         }
         y += 3;
         p.text("합 " + v.r.sum + " / " + v.lim, 6, y, GREEN);
-        p.textRight("광채 " + v.r.n + "개", w - 6, y, GRAY);
+        p.textRight(usedLabel(v), w - 6, y, usedCol(v, GRAY, 0xFFFF8F8F));
+        if (v.tally >= 0) {
+            tallyChip(p, v, w / 2, y + 13);
+            return new int[]{w, y + 32};
+        }
         return new int[]{w, y + 14};
     }
 
     // ---------------------------------------------------------------- B 한 줄형
-    private static int[] layoutB(Pen p, SegongClient.View v, int[] known) {
-        String line;
+    /** 한 줄 내용을 x, y 에서 그리고 차지한 폭을 돌려준다 (Pen 이 꺼져 있으면 폭만 잰다). 광채 아이콘이 있으면 이름 대신 그림. */
+    private static int rowB(Pen p, SegongClient.View v, int x, int y) {
+        int x0 = x;
         if (v.r == null) {
-            line = "§f현재 " + v.stats[0] + "/" + v.stats[1] + "/" + v.stats[2] + " §7· §c등급 못 읽음 (" + SegongClient.keyName(SegongClient.gradeKey) + ")";
-        } else {
-            line = "§6" + gradeLabel(v.lim) + " §7│ §d바이올렛 §f§l" + v.r.a + " §b오팔 §f§l" + v.r.b + " §7아다만티움 §f§l" + v.r.c + " §7│ §a합 " + v.r.sum;
+            x += p.text("§f현재 " + v.stats[0] + "/" + v.stats[1] + "/" + v.stats[2] + " §7· §c등급 못 읽음 (" + SegongClient.keyName(SegongClient.gradeKey) + ")", x, y, WHITE);
+            return x - x0;
         }
+        final String[] pre = {"§d", "§b", "§7"};
+        final int[] cnt = {v.r.a, v.r.b, v.r.c};
+        final int G = 4;                       // 글자 사이 간격 (띄어쓰기 한 칸 폭)
+        x += p.text("§6" + gradeLabel(v.lim), x, y, WHITE) + G;
+        x += p.text("§7│", x, y, WHITE) + G;
+        for (int k = 0; k < 3; k++) {
+            ItemStack ic = icon(k);
+            if (ic != null) {
+                p.item(ic, x + 5, y + 4, 0.6f);
+                x += 12;
+            } else {
+                x += p.text(pre[k] + NAME[k], x, y, WHITE) + G;
+            }
+            x += p.text("§f§l" + cnt[k], x, y, WHITE) + G + 2;
+        }
+        x += p.text("§7│", x, y, WHITE) + G;
+        x += p.text("§a합 " + v.r.sum, x, y, WHITE);
+        if (v.r.missing > 0) {
+            x += G;
+            x += p.text("§7·", x, y, WHITE) + G;
+            x += p.text("§c" + v.r.missing + "개 부족", x, y, WHITE);
+        }
+        if (v.tally >= 0) {
+            x += G;
+            x += p.text("§7│", x, y, WHITE) + G;
+            x += p.text("§e오늘 " + v.tally + "회", x, y, WHITE);
+        }
+        return x - x0;
+    }
+
+    private static int[] layoutB(Pen p, SegongClient.View v, int[] known) {
         final int th = SegongClient.theme;      // 0 약방 / 1 우드 / 2 크림
         boolean wood = th == 1, apo = th == 0;
-        int w = p.tr.getWidth(line) + (apo ? 24 : wood ? 22 : 16), h = apo ? 21 : wood ? 19 : 17;
+        int padL = apo ? 12 : wood ? 11 : 8, padT = apo || wood ? 6 : 5;
+        int tw = rowB(new Pen(p.tr, p.ctx, false), v, 0, 0);
+        int w = tw + (apo ? 24 : wood ? 22 : 16), h = apo ? 21 : wood ? 19 : 17;
         if (known != null) {
             if (apo) { if (p.on) Apo.frame(p.ctx, known[0], known[1], true); }
             else if (wood) { if (p.on) woodFrame(p.ctx, known[0], known[1]); }
             else p.frame(known[0], known[1]);
         }
-        p.text(line, apo ? 12 : wood ? 11 : 8, apo || wood ? 6 : 5, WHITE);
+        rowB(p, v, padL, padT);
         return new int[]{w, h};
     }
 
     // ---------------------------------------------------------------- C 슬롯 배지형 (요약 상자 + 슬롯 배지)
+    /** 둘째 줄 (순도 · 광도 · 강도 결과). 광채 아이콘이 있으면 각 항목 앞에 그림. 폭을 돌려준다. */
+    private static int rowC2(Pen p, SegongClient.View v, int x, int y) {
+        int x0 = x;
+        if (v.r == null) {
+            x += p.text("§7현재 " + v.stats[0] + " / " + v.stats[1] + " / " + v.stats[2], x, y, WHITE);
+            return x - x0;
+        }
+        final int[] cnt = {v.r.a, v.r.b, v.r.c};
+        final int G = 4;
+        for (int k = 0; k < 3; k++) {
+            if (k > 0) {
+                x += G;
+                x += p.text("§7·", x, y, WHITE) + G;
+            }
+            ItemStack ic = icon(k);
+            if (ic != null) {
+                p.item(ic, x + 5, y + 4, 0.6f);
+                x += 12;
+            }
+            int after = Math.min(100, v.stats[k] + cnt[k] * 10);
+            x += p.text("§7" + LABEL[k] + " " + after, x, y, WHITE);
+        }
+        return x - x0;
+    }
+
     private static int[] layoutC(Pen p, SegongClient.View v, int[] known) {
-        String l1, l2;
+        String l1;
         if (v.r == null) {
             l1 = "§c등급을 못 읽음 → " + SegongClient.keyName(SegongClient.gradeKey) + " 키로 선택";
-            l2 = "§7현재 " + v.stats[0] + " / " + v.stats[1] + " / " + v.stats[2];
         } else {
             l1 = "§a합 " + v.r.sum + " / " + v.lim + " §7· §6" + gradeLabel(v.lim);
-            int[] cnt = {v.r.a, v.r.b, v.r.c};
-            int[] after = new int[3];
-            for (int k = 0; k < 3; k++) after[k] = Math.min(100, v.stats[k] + cnt[k] * 10);
-            l2 = "§7순도 " + after[0] + " · 광도 " + after[1] + " · 강도 " + after[2];
+            if (v.r.missing > 0) l1 += " §7· §c" + v.r.missing + "개 부족";
+            if (v.tally >= 0) l1 += " §7· §e오늘 " + v.tally + "회";
         }
         final int th = SegongClient.theme;      // 0 약방 / 1 우드 / 2 크림
         boolean wood = th <= 1, apo = th == 0;
-        int w = Math.max(p.tr.getWidth(l1), p.tr.getWidth(l2)) + (wood ? 24 : 16), h = wood ? 34 : 30;
+        int w1 = p.tr.getWidth(l1);
+        int w2 = rowC2(new Pen(p.tr, p.ctx, false), v, 0, 0);
+        int w = Math.max(w1, w2) + (wood ? 24 : 16), h = wood ? 34 : 30;
         if (known != null) {
             if (apo) { if (p.on) Apo.frame(p.ctx, known[0], known[1], true); }
             else if (wood) { if (p.on) woodFrame(p.ctx, known[0], known[1]); }
             else p.frame(known[0], known[1]);
         }
         int off = wood ? 3 : 0;
-        p.text(l1, (w - p.tr.getWidth(l1)) / 2, 5 + off, WHITE);
-        p.text(l2, (w - p.tr.getWidth(l2)) / 2, 17 + off, WHITE);
+        p.text(l1, (w - w1) / 2, 5 + off, WHITE);
+        rowC2(p, v, (w - w2) / 2, 17 + off);
         return new int[]{w, h};
     }
 
@@ -504,14 +732,17 @@ final class Overlay {
         int ox, oy;
         try { ox = acc.segong_getX(); oy = acc.segong_getY(); } catch (Throwable e) { return; }
         int[] cnt = {v.r.a, v.r.b, v.r.c};
-        for (int k = 0; k < 3; k++) {
-            if (cnt[k] <= 0) continue;
-            for (Slot sl : hs.getScreenHandler().slots) {
-                if (sl.inventory != mc.player.getInventory()) continue;
-                ItemStack st = sl.getStack();
-                if (st.isEmpty()) continue;
-                String name = st.getName().getString();
-                if (!name.contains("광채") || !name.contains(Overlay.NAME[k])) continue;
+        if (cnt[0] <= 0 && cnt[1] <= 0 && cnt[2] <= 0) return;
+        boolean[] done = new boolean[3];
+        for (Slot sl : hs.getScreenHandler().slots) {      // 슬롯을 한 번만 훑는다 (종류마다 첫 칸에만 배지)
+            if (sl.inventory != mc.player.getInventory()) continue;
+            ItemStack st = sl.getStack();
+            if (st.isEmpty()) continue;
+            String name = st.getName().getString();
+            if (!name.contains("광채")) continue;
+            for (int k = 0; k < 3; k++) {
+                if (done[k] || cnt[k] <= 0 || !name.contains(NAME[k])) continue;
+                done[k] = true;
                 int sx = ox + sl.x, sy = oy + sl.y;
                 int g = 0xFF18E07A;
                 ctx.fill(sx - 1, sy - 1, sx + 17, sy, g);

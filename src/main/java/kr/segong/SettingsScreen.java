@@ -2,6 +2,8 @@ package kr.segong;
 
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 
 import java.util.ArrayList;
@@ -50,12 +52,16 @@ class SettingsScreen extends Screen {
         Runnable act;
     }
 
+    private static final int ROW_GAP = 19;        // 줄 간격
     private final Screen parent;
     private final List<Btn> btns = new ArrayList<>();
     private int pl, pt, pw, ph;          // 패널 위치/크기
     private int cx0;                     // 컨트롤 시작 x
     private int sliderX, sliderY, sliderW = 190, sliderH = 14;
     private boolean sliderDrag;
+    private boolean confirmReset;     // "설정 기본값으로" 를 한 번 눌러 확인 대기 중
+    private Btn resetBtn;
+    private Btn tallyBtn;
 
     SettingsScreen(Screen parent) {
         super(Text.literal("세공 도우미 설정"));
@@ -75,15 +81,15 @@ class SettingsScreen extends Screen {
         btns.clear();
         applyTheme();
         pw = Math.min(width - 16, 400);
-        ph = Math.min(height - 16, 252);
+        ph = Math.min(height - 16, 290);
         pl = (width - pw) / 2;
         pt = (height - ph) / 2;
         cx0 = pl + (apo ? 96 : 92);
-        int y = pt + (apo ? 34 : 38), gap = 25;
+        int y = pt + (apo ? 34 : 38), gap = ROW_GAP;
 
         // 동작
         int x = cx0;
-        Btn b = add(x, y, "켜짐", () -> SegongClient.enabled, () -> { SegongClient.enabled = true; SegongClient.save(); }, false);
+        Btn b = add(x, y, "켜짐", () -> SegongClient.enabled, () -> { SegongClient.enabled = true; SegongClient.rearm(); SegongClient.save(); }, false);
         x += b.w + 4;
         add(x, y, "꺼짐", () -> !SegongClient.enabled, () -> { SegongClient.enabled = false; SegongClient.save(); }, false);
 
@@ -102,6 +108,38 @@ class SettingsScreen extends Screen {
             b = add(x, y, SegongClient.THEME_NAME[i], () -> SegongClient.theme == k, () -> { SegongClient.theme = k; SegongClient.save(); init(); }, false);
             x += b.w + 4;
         }
+
+        // 아이콘 (광채 그림)
+        y += gap; x = cx0;
+        b = add(x, y, "켜짐", () -> SegongClient.icons, () -> { SegongClient.icons = true; SegongClient.save(); }, false);
+        x += b.w + 4;
+        add(x, y, "꺼짐", () -> !SegongClient.icons, () -> { SegongClient.icons = false; SegongClient.save(); }, false);
+
+        // 추천 고정 (처음 정한 목표를 광채 넣는 동안 유지)
+        y += gap; x = cx0;
+        b = add(x, y, "켜짐", () -> SegongClient.lock, () -> { SegongClient.lock = true; Plan.clear(); SegongClient.save(); }, false);
+        x += b.w + 4;
+        add(x, y, "꺼짐", () -> !SegongClient.lock, () -> { SegongClient.lock = false; Plan.clear(); SegongClient.save(); }, false);
+
+        // 세공 횟수 (오늘 몇 번 했는지 표시 / 고치기). 광채가 소모될 때마다 1번.
+        y += gap; x = cx0;
+        b = add(x, y, "켜짐", () -> Tally.show, () -> { Tally.show = true; SegongClient.save(); }, false);
+        x += b.w + 4;
+        b = add(x, y, "꺼짐", () -> !Tally.show, () -> { Tally.show = false; SegongClient.save(); }, false);
+        x += b.w + 12;
+        b = add(x, y, "-1", () -> false, () -> { Tally.add(-1); SegongClient.save(); }, false);
+        x += b.w + 4;
+        b = add(x, y, "+1", () -> false, () -> { Tally.add(1); SegongClient.save(); }, false);
+        x += b.w + 4;
+        tallyBtn = add(x, y, "0으로", () -> false, () -> { Tally.reset(); SegongClient.save(); }, false);
+
+        // 횟수 표시 위치: 카드 안 / 따로 띄우기 (따로면 알약만 끌어서 옮길 수 있음)
+        y += gap; x = cx0;
+        b = add(x, y, "카드 안", () -> !SegongClient.tallySep, () -> { SegongClient.tallySep = false; SegongClient.save(); }, false);
+        x += b.w + 4;
+        b = add(x, y, "따로 띄우기", () -> SegongClient.tallySep, () -> { SegongClient.tallySep = true; SegongClient.save(); }, false);
+        x += b.w + 12;
+        add(x, y, "횟수 위치 초기화", () -> SegongClient.tallyX < 0, () -> SegongClient.resetTallyPos(), false);
 
         // 글자 크기 (슬라이더)
         y += gap;
@@ -122,7 +160,16 @@ class SettingsScreen extends Screen {
 
         // 아래 버튼
         int by = pt + ph - (apo ? 34 : 28), sideM = apo ? 18 : 14;
-        add(pl + sideM, by, "학습한 등급 표시 지우기", () -> false, () -> SegongClient.resetLearned(), true);
+        Btn learn = add(pl + sideM, by, "학습한 등급 표시 지우기", () -> false, () -> SegongClient.resetLearned(), true);
+        resetBtn = add(learn.x + learn.w + 6, by, confirmReset ? "한 번 더 누르면 초기화" : "설정 기본값으로", () -> false, () -> {
+            if (!confirmReset) {
+                confirmReset = true;
+            } else {
+                confirmReset = false;
+                SegongClient.resetAll();
+            }
+            init();
+        }, confirmReset);
         Btn close = add(0, by, "닫기", () -> false, this::close, false);
         close.w = 56;
         close.x = pl + pw - sideM - close.w;
@@ -147,7 +194,13 @@ class SettingsScreen extends Screen {
     public boolean mouseClicked(double mx, double my, int button) {
         if (button == 0) {
             for (Btn b : new ArrayList<>(btns)) {
-                if (in(b, mx, my)) { b.act.run(); return true; }
+                if (in(b, mx, my)) {
+                    boolean was = confirmReset;
+                    if (b != resetBtn) confirmReset = false;    // 다른 버튼을 누르면 확인 대기 해제
+                    b.act.run();
+                    if (was && b != resetBtn) init();
+                    return true;
+                }
             }
             if (mx >= sliderX - 2 && mx <= sliderX + sliderW + 2 && my >= sliderY - 3 && my <= sliderY + sliderH + 3) {
                 sliderDrag = true; setSlider(mx); return true;
@@ -211,12 +264,10 @@ class SettingsScreen extends Screen {
         }
 
         // 줄 이름
-        int gap = 25, y = pt + (apo ? 34 : 38), lx = pl + (apo ? 18 : 14);
-        String[] labels = {"동작", "표시 방식", "디자인", "글자 크기", "위치", "등급"};
-        String[] subs = {null, null, "카드와 이 창", null, "카드를 끌어서", "안 읽힐 때만"};
+        int gap = ROW_GAP, y = pt + (apo ? 34 : 38), lx = pl + (apo ? 18 : 14);
+        String[] labels = {"동작", "표시 방식", "디자인", "아이콘", "추천 고정", "세공 횟수", "횟수 표시", "글자 크기", "위치", "등급"};
         for (int i = 0; i < labels.length; i++) {
-            c.drawText(textRenderer, labels[i], lx, y + gap * i + (subs[i] != null ? 0 : 5), TXT, wood);
-            if (subs[i] != null) c.drawText(textRenderer, subs[i], lx, y + gap * i + 9, SUB, wood);
+            c.drawText(textRenderer, labels[i], lx, y + gap * i + 5, TXT, wood);
         }
 
         // 슬라이더
@@ -257,16 +308,52 @@ class SettingsScreen extends Screen {
             }
         }
 
-        // 아래 안내
+        // 세공 횟수 줄 오른쪽에 지금 횟수
+        if (tallyBtn != null) {
+            c.drawText(textRenderer, "오늘 " + Tally.count + "회", tallyBtn.x + tallyBtn.w + 10, tallyBtn.y + 5, INFO, wood);
+        }
+
+        // 아래 안내 (광채 개수는 그림이 있으면 그림 + 숫자로)
         long[] n = SegongClient.countOrbs(client);
-        String l1 = "인벤토리 광채  바이올렛 " + n[0] + " · 오팔 " + n[1] + " · 아다만티움 " + n[2];
-        c.drawText(textRenderer, l1, lx, pt + ph - (apo ? 56 : 52), INFO, wood);
+        int ly = pt + ph - (apo ? 60 : 52);
+        int ix = lx;
+        String head = "인벤토리 광채";
+        c.drawText(textRenderer, head, ix, ly, INFO, wood);
+        ix += textRenderer.getWidth(head) + 8;
+        for (int k = 0; k < 3; k++) {
+            ItemStack ic = SegongClient.iconFor(k);
+            String cntText;
+            if (ic != null) {
+                MatrixStack m = c.getMatrices();
+                m.push();
+                try {
+                    m.translate((float) (ix + 5 - 6), (float) (ly + 4 - 6), 0f);
+                    m.scale(0.75f, 0.75f, 1f);
+                    c.drawItem(ic, 0, 0);
+                } catch (Throwable e) {
+                    SegongClient.iconFailed(e);
+                } finally {
+                    m.pop();
+                }
+                ix += 13;
+                cntText = String.valueOf(n[k]);
+            } else {
+                cntText = Overlay.NAME[k] + " " + n[k];
+            }
+            c.drawText(textRenderer, cntText, ix, ly, TXT, wood);
+            ix += textRenderer.getWidth(cntText) + 10;
+        }
         String l2 = SegongClient.keyName(SegongClient.toggleKey) + " 켜기/끄기 · " + SegongClient.keyName(SegongClient.gradeKey)
                 + " 등급 · " + SegongClient.keyName(SegongClient.settingsKey) + " 설정 (키는 조작 설정에서 변경)";
-        c.drawText(textRenderer, l2, lx, pt + ph - (apo ? 44 : 40), SUB, wood);
+        c.drawText(textRenderer, l2, lx, pt + ph - (apo ? 48 : 40), SUB, wood);
 
         // 실제 위치 미리보기
-        Overlay.render(client, c, SegongClient.sampleView(), -1, -1, false);
+        try {
+            Overlay.render(client, c, SegongClient.sampleView(), -1, -1, false);
+            if (SegongClient.tallySep && Tally.show) Overlay.renderTally(client, c, Tally.count, -1, -1, false);
+        } catch (Throwable e) {
+            SegongClient.noteError(e);     // 미리보기가 실패해도 설정 화면은 계속 쓸 수 있게
+        }
     }
 
     /** 설치된 모드 버전 (jar 이름과 같은 값) */
