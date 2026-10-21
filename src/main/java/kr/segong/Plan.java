@@ -16,6 +16,7 @@ final class Plan {
 
     private static final List<Plan> book = new ArrayList<>();   // 가장 최근에 쓴 계획이 앞
     private static long lastUse;
+    private static int nextId = 1;      // 계획 번호 (새 계획마다 1씩 늘어난다)
 
     private final int lim;
     private final String sig;
@@ -24,6 +25,7 @@ final class Plan {
     private final long[] stock0;        // 계획을 세울 때 보유 개수
     private final int[] seen = new int[3];   // 지금까지 본 '이미 넣은 개수' 중 가장 큰 값
     private final int missing;          // 계획을 세울 때 모자랐던 광채 개수
+    private final int id = nextId++;    // 계획 번호
 
     private Plan(int lim, String sig, int[] start, int[] steps, long[] stock, int missing) {
         this.missing = missing;
@@ -64,6 +66,7 @@ final class Plan {
         // 맞는 계획이 없으면 새로 세운다
         Calc.Result r = Calc.best(cur[0], cur[1], cur[2], lim, stock);
         Plan p = new Plan(lim, sig, cur, new int[]{r.a, r.b, r.c}, stock, r.missing);
+        r.plan = p.id;
         book.add(0, p);
         while (book.size() > MAX_PLANS) book.remove(book.size() - 1);
         for (int i = 0; i < 3; i++) effOut[i] = stock[i];
@@ -75,7 +78,7 @@ final class Plan {
         List<String> out = new ArrayList<>();
         for (int i = 0; i < book.size(); i++) {
             Plan p = book.get(i);
-            out.add((i == 0 ? "  ▶ " : "    ") + p.lim + "한도 | 시작 " + p.start[0] + "/" + p.start[1] + "/" + p.start[2]
+            out.add((i == 0 ? "  ▶ " : "    ") + "#" + p.id + " " + p.lim + "한도 | 시작 " + p.start[0] + "/" + p.start[1] + "/" + p.start[2]
                     + " | 계획 " + p.steps[0] + "/" + p.steps[1] + "/" + p.steps[2]
                     + " | 넣은 " + p.seen[0] + "/" + p.seen[1] + "/" + p.seen[2]
                     + " | 계획 때 보유 " + p.stock0[0] + "/" + p.stock0[1] + "/" + p.stock0[2]
@@ -108,6 +111,7 @@ final class Plan {
         }
         r.sum = sumStart + 10 * totalSteps;
         r.missing = missing;
+        r.plan = id;
         return r;
     }
 }

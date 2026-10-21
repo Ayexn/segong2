@@ -7,6 +7,7 @@ public final class Calc {
         public int sum;       // 사용 후 합
         public int n;         // 총 사용 개수
         public int missing;   // 보유가 모자라서 못 채운 광채 개수 (보유가 넉넉했다면 더 쓸 수 있었던 개수)
+        public int plan;      // 이 추천이 속한 계획 번호 (Plan 이 채움. 0 = 계획 없음)
     }
 
     private Calc() {}

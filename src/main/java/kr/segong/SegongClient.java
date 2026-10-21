@@ -110,15 +110,69 @@ public class SegongClient implements ClientModInitializer {
     private static long[] uiOrbs = new long[3];    // 열린 화면의 '인벤토리 밖' 칸에서 본 광채 아이템 개수 (점검용, 계산에는 안 씀)
     private static int uiItems;                    // 열린 화면의 '인벤토리 밖' 칸 중 아이템이 있는 칸 수
 
+    // 카드 깜빡임 방지: 보석을 잠깐 못 읽어도(칸 갱신·화면 새로고침 순간) 직전 보석으로 이어서 보여준다
+    private static final long GEM_GRACE_MS = 1500;
+    private static Gem shownGem;          // 마지막으로 카드에 그린 보석
+    private static long shownAt;
+    private static boolean inGap;         // 지금 '잠깐 못 읽는 중'인지 (횟수를 한 번만 세려고)
+    private static int gapSaved;          // 점검용: 직전 보석으로 이어서 보여준 횟수
+    private static String gapWhy = "";    // 점검용: 마지막 이유
+    private static int noGradeFrames;     // 점검용: 보석은 읽었는데 등급 한도를 못 구한 화면 수
+    private static int screenInits;       // 점검용: 화면이 새로 열린 횟수
+
+    // 최근 일어난 일 기록 (/segong log): 깜빡임·보유·횟수가 이상할 때 원인을 찾으려고
+    private static final int EV_MAX = 60;
+    private static final String[] evText = new String[EV_MAX];
+    private static final long[] evAt = new long[EV_MAX];
+    private static int evCount;
+    private static String lastEv = "";
+    private static boolean prevScreenOpen, prevFound;
+    private static String logStats = "", logStock = "";
+    private static int logPlan = -1;
+
+    static void ev(String text) {
+        int i = evCount % EV_MAX;
+        evText[i] = text;
+        evAt[i] = System.currentTimeMillis();
+        evCount++;
+    }
+
+    /** 같은 글이 연달아 나오면 한 번만 적는다 (오류가 계속 날 때 기록이 가득 차지 않게). */
+    private static void evOnce(String text) {
+        if (text.equals(lastEv)) return;
+        lastEv = text;
+        ev(text);
+    }
+
+    static List<String> buildLog() {
+        List<String> out = new ArrayList<>();
+        out.add("[세공] 최근 일어난 일 (위가 오래된 것, 시간은 지금부터 몇 초 전인지)");
+        long now = System.currentTimeMillis();
+        int n = Math.min(evCount, EV_MAX);
+        for (int k = evCount - n; k < evCount; k++) {
+            int i = k % EV_MAX;
+            out.add(String.format("%6.1f초 전  %s", (now - evAt[i]) / 1000.0, evText[i]));
+        }
+        if (n == 0) out.add(" (아직 기록이 없어요)");
+        return out;
+    }
+
+    private static String lostWhy(boolean screenOpen) {
+        if (!screenOpen) return "화면이 잠깐 없었음";
+        return uiItems == 0 ? "칸이 전부 비어 있었음 (서버가 칸을 다시 채우는 중?)" : "칸 " + uiItems + "개에 아이템은 있는데 보석으로 못 읽음";
+    }
+
     private static String flash = "";
     private static long flashUntil;
 
     // 오류 방어 (기록과 규칙은 Guard 에 있다): 그리기·툴팁 읽기 중 오류가 나도 게임이 꺼지지 않게 하고, 반복되면 모드만 잠시 끈다
     static void noteError(Throwable e) {
         Guard.note(e);
+        evOnce("오류: " + Guard.lastError);
     }
 
     private static void onDrawError(Throwable e) {
+        evOnce("그리기 오류: " + Guard.describe(e));
         if (Guard.drawFailed(e, System.currentTimeMillis())) {
             flash("오류가 반복돼서 세공 도우미를 잠시 껐어요 (" + keyName(toggleKey) + " 키로 다시 켜기 · /segong check 로 확인)");
         }
@@ -215,6 +269,8 @@ public class SegongClient implements ClientModInitializer {
 
         // 3) 화면이 열려 있을 때 키 입력 + 그리기 (열린 화면에서는 일반 키 바인딩이 안 먹기 때문)
         ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> {
+            screenInits++;
+            ev("화면 새로 열림: " + screen.getClass().getSimpleName());
             hoverGem = null;
             moduleGem = null;
             moduleScanAt = 0;
@@ -278,6 +334,19 @@ public class SegongClient implements ClientModInitializer {
                             c.getSource().sendFeedback(Text.literal(msg));
                             return Command.SINGLE_SUCCESS;
                         }))
+                        .then(ClientCommandManager.literal("log").executes(c -> {
+                            MinecraftClient mc = MinecraftClient.getInstance();
+                            List<String> lines = buildLog();
+                            for (String ln : lines) c.getSource().sendFeedback(Text.literal(ln));
+                            String msg = "[세공] 위 내용을 클립보드에 복사했어요 (Ctrl+V 로 붙여넣기)";
+                            try {
+                                GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), String.join("\n", lines));
+                            } catch (Throwable e) {
+                                msg = "[세공] 클립보드 복사는 못 했어요. 위 글자를 그대로 알려 주세요";
+                            }
+                            c.getSource().sendFeedback(Text.literal(msg));
+                            return Command.SINGLE_SUCCESS;
+                        }))
                         .then(ClientCommandManager.literal("count")
                                 .executes(c -> {
                                     c.getSource().sendFeedback(Text.literal("[세공] " + Tally.describe(System.currentTimeMillis())));
@@ -331,19 +400,10 @@ public class SegongClient implements ClientModInitializer {
 
     // ---------------------------------------------------------------- 오늘 세공 횟수
 
-    /** 0.05초마다: 세공 모듈 칸에 보석이 있는 동안 광채가 소모되면 횟수를 올린다 (자세한 규칙은 Tally). */
+    /** 0.05초마다: 날짜가 바뀌었으면 횟수를 0부터 다시 센다 (횟수는 카드를 그릴 때 추천 계획이 끝나면 오른다: Tally). */
     private static void tickTally(MinecraftClient client) {
-        if (client.player == null) {      // 게임 밖: 개수 비교를 쉰다
-            Tally.pause();
-            return;
-        }
-        boolean gem = false;
-        if (enabled && !Guard.autoOff && client.currentScreen instanceof HandledScreen<?>) {
-            scanModule(client);     // 0.25초에 한 번만 실제로 읽는다
-            gem = moduleGem != null;
-        }
-        String today = Tally.dayKey(java.time.LocalDateTime.now(), Tally.resetHour);
-        if (Tally.observe(countOrbs(client), gem, System.currentTimeMillis(), today)) save();    // 광채 개수는 0.2초 캐시
+        if (client.player == null) return;
+        if (Tally.rollover(Tally.dayKey(java.time.LocalDateTime.now(), Tally.resetHour))) save();
     }
 
     // ---------------------------------------------------------------- 키 동작
@@ -448,7 +508,7 @@ public class SegongClient implements ClientModInitializer {
     /** 열린 화면의 '내 인벤토리가 아닌' 칸에서 보석을 찾는다. 0.25초마다 한 번. (광채 아이템 수도 점검용으로 센다) */
     private static void scanModule(MinecraftClient client) {
         long now = System.currentTimeMillis();
-        if (now - moduleScanAt < 250) return;
+        if (now - moduleScanAt < (moduleGem == null ? 50 : 250)) return;      // 보석을 못 찾은 동안은 더 자주 다시 읽는다
         moduleScanAt = now;
         moduleGem = null;
         long[] ui = new long[3];
@@ -537,14 +597,40 @@ public class SegongClient implements ClientModInitializer {
 
     private static void drawBody(MinecraftClient client, DrawContext ctx, int mx, int my, boolean interactive, long now) {
         boolean screenOpen = client.currentScreen != null;
+        if (screenOpen != prevScreenOpen) {
+            prevScreenOpen = screenOpen;
+            ev(screenOpen ? "화면 열린 상태: " + client.currentScreen.getClass().getSimpleName() : "화면 없음 (게임 화면)");
+        }
         Gem g = null;
         if (screenOpen) {
             scanModule(client);
             g = moduleGem;
         }
         if (g == null && hoverGem != null && (screenOpen || now - hoverAt <= HOVER_MS)) g = hoverGem;
+        boolean found = g != null;
+        if (found != prevFound) {
+            prevFound = found;
+            ev(found ? "보석 읽음" : "보석 못 읽음 - " + lostWhy(screenOpen));
+        }
+        if (found) {
+            inGap = false;
+            shownGem = g;
+            shownAt = now;
+            lastGemAt = now;
+            String st = triple(g.stats[0], g.stats[1], g.stats[2]);
+            if (!st.equals(logStats)) {
+                ev("보석 수치 " + (logStats.isEmpty() ? "" : logStats + " → ") + st);
+                logStats = st;
+            }
+        } else if (shownGem != null && now - shownAt <= GEM_GRACE_MS) {
+            g = shownGem;       // 잠깐 못 읽었을 뿐이면 카드를 지우지 않는다 (깜빡임 방지)
+            if (!inGap) {
+                inGap = true;
+                gapSaved++;
+                gapWhy = lostWhy(screenOpen);
+            }
+        }
         currentGem = g;
-        if (g != null) lastGemAt = now;
         // 따로 띄우기: 보석이 보이는 동안, 그리고 세공 화면에서 보석이 막 없어진 뒤 30초까지
         boolean chipOn = tallySep && Tally.show && (g != null || (screenOpen && now - lastGemAt <= TALLY_KEEP_MS));
         if (g == null) {
@@ -556,19 +642,29 @@ public class SegongClient implements ClientModInitializer {
         v.stats = g.stats;
         v.sig = g.sig;
         v.tally = (Tally.show && !tallySep) ? Tally.count : -1;
-        v.stock = countOrbs(client);
+        v.stock = countOrbs(client);      // 보유 = 내 인벤토리를 그대로 센 값 (오른쪽 인벤토리 창과 같다)
+        String sk = triple(v.stock[0], v.stock[1], v.stock[2]);
+        if (!sk.equals(logStock)) {
+            ev("인벤토리 광채 " + (logStock.isEmpty() ? "" : logStock + " → ") + sk);
+            logStock = sk;
+        }
         if (g.gradeLimit > 0) { v.lim = g.gradeLimit; v.how = "자동"; }
         else if (!g.sig.isEmpty() && learned.containsKey(g.sig)) { v.lim = learned.get(g.sig); v.how = "기억"; }
         else if (gradeMode > 0) { v.lim = LIMITS[gradeMode]; v.how = "수동"; }
         if (v.lim > 0) {
-            if (lock) {
-                long[] eff = new long[3];
-                v.r = Plan.resolve(g.stats, v.lim, g.sig, v.stock, eff, now);   // 처음 정한 목표를 유지하고 남은 개수만 보여줌
-                v.stock = eff;
-            } else {
-                v.r = Calc.best(g.stats[0], g.stats[1], g.stats[2], v.lim, v.stock);
+            long[] eff = new long[3];
+            Calc.Result rp = Plan.resolve(g.stats, v.lim, g.sig, v.stock, eff, now);   // 처음 정한 목표를 유지하고 남은 개수만 줄어든다
+            v.r = lock ? rp : Calc.best(g.stats[0], g.stats[1], g.stats[2], v.lim, v.stock);
+            if (rp.plan != logPlan) {
+                logPlan = rp.plan;
+                ev("추천 새로 정함 #" + rp.plan + " (넣을 개수 " + triple(rp.a, rp.b, rp.c) + ")");
+            }
+            if (Tally.observePlan(rp.plan, rp.n)) {      // 추천한 개수를 다 넣어서 목표에 도달하면 +1
+                ev("세공 횟수 +1 → " + Tally.count + "회 (계획 #" + rp.plan + " 끝)");
+                save();
             }
         }
+        if (v.lim <= 0) noGradeFrames++;
         lastView = v;
         lastViewAt = now;
         lastScreen = screenOpen ? client.currentScreen.getClass().getSimpleName() : "(화면 없음)";
@@ -611,7 +707,6 @@ public class SegongClient implements ClientModInitializer {
         lock = true;
         Tally.show = true;
         Tally.resetHour = 0;
-        Tally.gapMs = 350;
         tallySep = false;
         tallyX = -1f;
         tallyY = -1f;
@@ -648,6 +743,8 @@ public class SegongClient implements ClientModInitializer {
         out.add(" 세공 횟수: " + Tally.describe(System.currentTimeMillis()) + " · 표시 " + (tallySep ? "따로 띄움" : "카드 안"));
         long[] inv = countOrbs(mc, true);
         out.add(" 인벤토리 광채(실제): 바이올렛/오팔/아다만티움 " + triple(inv[0], inv[1], inv[2]));
+        out.add(" 깜빡임 방지: 보석을 잠깐 못 읽어서 직전 보석으로 이어 보여준 횟수 " + gapSaved + (gapSaved > 0 ? " (마지막 이유: " + gapWhy + ")" : "")
+                + " · 화면 새로 열림 " + screenInits + "번 · 등급을 못 구한 화면 " + noGradeFrames);
         out.add(" 광채 그림을 본 적: " + (orbIcon[0] != null ? "O" : "X") + "/" + (orbIcon[1] != null ? "O" : "X") + "/" + (orbIcon[2] != null ? "O" : "X")
                 + " · 저장됨 " + (orbSnbt[0] != null ? "O" : "X") + "/" + (orbSnbt[1] != null ? "O" : "X") + "/" + (orbSnbt[2] != null ? "O" : "X")
                 + (orbRestoreFailed[0] || orbRestoreFailed[1] || orbRestoreFailed[2] ? " · 저장된 그림 읽기 실패 있음" : ""));
@@ -730,7 +827,6 @@ public class SegongClient implements ClientModInitializer {
             lock = !"false".equals(pr.getProperty("lock", "true"));
             Tally.show = !"false".equals(pr.getProperty("tally.on", "true"));
             Tally.resetHour = Math.max(0, Math.min(23, Integer.parseInt(pr.getProperty("tally.reset", "0"))));
-            Tally.gapMs = Math.max(0, Math.min(10000, Long.parseLong(pr.getProperty("tally.gap", "350"))));
             Tally.day = pr.getProperty("tally.day", "");
             Tally.count = Math.max(0, Integer.parseInt(pr.getProperty("tally.count", "0")));
             for (int k = 0; k < 3; k++) orbSnbt[k] = pr.getProperty("icon." + k);
@@ -759,7 +855,6 @@ public class SegongClient implements ClientModInitializer {
             pr.setProperty("lock", String.valueOf(lock));
             pr.setProperty("tally.on", String.valueOf(Tally.show));
             pr.setProperty("tally.reset", String.valueOf(Tally.resetHour));
-            pr.setProperty("tally.gap", String.valueOf(Tally.gapMs));
             pr.setProperty("tally.day", Tally.day);
             pr.setProperty("tally.count", String.valueOf(Tally.count));
             for (int k = 0; k < 3; k++) if (orbSnbt[k] != null) pr.setProperty("icon." + k, orbSnbt[k]);
