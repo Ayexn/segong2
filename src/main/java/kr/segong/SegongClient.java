@@ -1,9 +1,13 @@
 package kr.segong;
 
 import com.mojang.brigadier.Command;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.item.v1.ItemTooltipCallback;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -103,8 +107,8 @@ public class SegongClient implements ClientModInitializer {
     private static Gem moduleGem;         // 열린 화면의 모듈 칸에서 찾은 보석
     private static long moduleScanAt;
     private static Gem currentGem;        // 지금 화면에 표시 중인 보석
-    private static Gem lastAnyGem;        // 가장 최근에 본 보석 (/segong dump 용)
-    private static View lastView;         // 가장 최근에 그린 추천 (/segong check 용)
+    private static Gem lastAnyGem;        // 가장 최근에 본 보석 (/세공 보석 용)
+    private static View lastView;         // 가장 최근에 그린 추천 (/세공 점검 용)
     private static long lastViewAt;
     private static String lastScreen = "";
     private static long[] uiOrbs = new long[3];    // 열린 화면의 '인벤토리 밖' 칸에서 본 광채 아이템 개수 (점검용, 계산에는 안 씀)
@@ -120,7 +124,7 @@ public class SegongClient implements ClientModInitializer {
     private static int noGradeFrames;     // 점검용: 보석은 읽었는데 등급 한도를 못 구한 화면 수
     private static int screenInits;       // 점검용: 화면이 새로 열린 횟수
 
-    // 최근 일어난 일 기록 (/segong log): 깜빡임·보유·횟수가 이상할 때 원인을 찾으려고
+    // 최근 일어난 일 기록 (/세공 기록): 깜빡임·보유·횟수가 이상할 때 원인을 찾으려고
     private static final int EV_MAX = 60;
     private static final String[] evText = new String[EV_MAX];
     private static final long[] evAt = new long[EV_MAX];
@@ -174,13 +178,13 @@ public class SegongClient implements ClientModInitializer {
     private static void onDrawError(Throwable e) {
         evOnce("그리기 오류: " + Guard.describe(e));
         if (Guard.drawFailed(e, System.currentTimeMillis())) {
-            flash("오류가 반복돼서 세공 도우미를 잠시 껐어요 (" + keyName(toggleKey) + " 키로 다시 켜기 · /segong check 로 확인)");
+            flash("오류가 반복돼서 세공 도우미를 잠시 껐어요 (" + keyName(toggleKey) + " 키로 다시 켜기 · /세공 점검 으로 확인)");
         }
     }
 
     /** 아이콘 그리기 실패: 아이콘만 끄고 나머지는 계속 보여준다. */
     static void iconFailed(Throwable e) {
-        if (Guard.iconFailed(e)) flash("아이콘을 그리지 못해서 아이콘만 껐어요 (/segong check 로 확인)");
+        if (Guard.iconFailed(e)) flash("아이콘을 그리지 못해서 아이콘만 껐어요 (/세공 점검 으로 확인)");
     }
 
     /** 그릴 광채 아이콘 (꺼져 있거나 아직 못 봤거나 그리기에 실패했으면 null) */
@@ -262,6 +266,7 @@ public class SegongClient implements ClientModInitializer {
                 while (gradeKey.wasPressed()) doGrade();
                 while (settingsKey.wasPressed()) client.setScreen(new SettingsScreen(null));
                 tickTally(client);
+                tickWelcome(client);
             } catch (Throwable e) {
                 noteError(e);
             }
@@ -293,109 +298,212 @@ public class SegongClient implements ClientModInitializer {
             if (c.currentScreen == null) draw(c, ctx, -1, -1, false);
         });
 
-        // 4) 명령어
-        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
-                dispatcher.register(ClientCommandManager.literal("segong")
-                        .then(ClientCommandManager.literal("settings").executes(c -> {
-                            MinecraftClient mc = MinecraftClient.getInstance();
-                            mc.send(() -> mc.setScreen(new SettingsScreen(null)));   // 채팅창이 닫힌 다음에 열기
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                        .then(ClientCommandManager.literal("inv").executes(c -> {
-                            long[] n = countOrbs(MinecraftClient.getInstance(), true);
-                            c.getSource().sendFeedback(Text.literal("[세공] 인벤토리 광채: 바이올렛 " + n[0] + " / 오팔 " + n[1] + " / 아다만티움 " + n[2]));
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                        .then(ClientCommandManager.literal("dump").executes(c -> {
-                            Gem g = lastAnyGem;
-                            if (g == null) {
-                                c.getSource().sendFeedback(Text.literal("[세공] 아직 읽은 보석이 없습니다. 보석에 마우스를 올린 뒤 다시 입력하세요"));
-                                return Command.SINGLE_SUCCESS;
-                            }
-                            c.getSource().sendFeedback(Text.literal("[세공] 마지막 보석 (" + g.lines.size() + "줄)"));
-                            c.getSource().sendFeedback(Text.literal(" 아이템: " + g.info));
-                            c.getSource().sendFeedback(Text.literal(" 등급표시 문자: " + (g.sig.isEmpty() ? "(없음)" : g.sig) + " / 글자로 읽은 한도: " + g.gradeLimit));
-                            for (int i = 0; i < g.lines.size(); i++) {
-                                c.getSource().sendFeedback(Text.literal("  " + (i + 1) + ") " + esc(g.lines.get(i))));
-                                if (i < 2) c.getSource().sendFeedback(Text.literal("     조각: " + runs(g.texts.get(i))));
-                            }
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                        .then(ClientCommandManager.literal("check").executes(c -> {
-                            MinecraftClient mc = MinecraftClient.getInstance();
-                            List<String> lines = buildCheck(mc);
-                            for (String ln : lines) c.getSource().sendFeedback(Text.literal(ln));
-                            String msg = "[세공] 위 내용을 클립보드에 복사했어요 (Ctrl+V 로 붙여넣기)";
-                            try {
-                                GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), String.join("\n", lines));
-                            } catch (Throwable e) {
-                                msg = "[세공] 클립보드 복사는 못 했어요. 위 글자를 그대로 알려 주세요";
-                            }
-                            c.getSource().sendFeedback(Text.literal(msg));
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                        .then(ClientCommandManager.literal("log").executes(c -> {
-                            MinecraftClient mc = MinecraftClient.getInstance();
-                            List<String> lines = buildLog();
-                            for (String ln : lines) c.getSource().sendFeedback(Text.literal(ln));
-                            String msg = "[세공] 위 내용을 클립보드에 복사했어요 (Ctrl+V 로 붙여넣기)";
-                            try {
-                                GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), String.join("\n", lines));
-                            } catch (Throwable e) {
-                                msg = "[세공] 클립보드 복사는 못 했어요. 위 글자를 그대로 알려 주세요";
-                            }
-                            c.getSource().sendFeedback(Text.literal(msg));
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                        .then(ClientCommandManager.literal("count")
-                                .executes(c -> {
-                                    c.getSource().sendFeedback(Text.literal("[세공] " + Tally.describe(System.currentTimeMillis())));
-                                    return Command.SINGLE_SUCCESS;
-                                })
-                                .then(ClientCommandManager.literal("add").executes(c -> {
-                                    Tally.add(1);
-                                    save();
-                                    c.getSource().sendFeedback(Text.literal("[세공] 오늘 세공 " + Tally.count + "회 (+1)"));
-                                    return Command.SINGLE_SUCCESS;
-                                }))
-                                .then(ClientCommandManager.literal("sub").executes(c -> {
-                                    Tally.add(-1);
-                                    save();
-                                    c.getSource().sendFeedback(Text.literal("[세공] 오늘 세공 " + Tally.count + "회 (-1)"));
-                                    return Command.SINGLE_SUCCESS;
-                                }))
-                                .then(ClientCommandManager.literal("reset").executes(c -> {
-                                    Tally.reset();
-                                    save();
-                                    c.getSource().sendFeedback(Text.literal("[세공] 오늘 세공 횟수를 0으로 되돌렸어요"));
-                                    return Command.SINGLE_SUCCESS;
-                                })))
-                        .then(ClientCommandManager.literal("slots").executes(c -> {
-                            MinecraftClient mc = MinecraftClient.getInstance();
-                            if (!(mc.currentScreen instanceof HandledScreen<?> hs)) {
-                                c.getSource().sendFeedback(Text.literal("[세공] 세공 화면을 연 상태에서 입력하세요"));
-                                return Command.SINGLE_SUCCESS;
-                            }
-                            int cnt = 0;
-                            for (Slot sl : hs.getScreenHandler().slots) {
-                                if (sl.inventory == mc.player.getInventory()) continue;
-                                ItemStack st = sl.getStack();
-                                if (st.isEmpty()) continue;
-                                cnt++;
-                                boolean gem = makeGem(st, tooltipTexts(mc, st)) != null;
-                                c.getSource().sendFeedback(Text.literal("  칸" + sl.id + ": " + st.getName().getString() + " x" + st.getCount() + (gem ? "  ← 보석" : "")));
-                            }
-                            if (cnt == 0) c.getSource().sendFeedback(Text.literal("[세공] 내 인벤토리가 아닌 칸에 아이템이 없습니다"));
-                            return Command.SINGLE_SUCCESS;
-                        }))
-                        .then(ClientCommandManager.literal("items").executes(c -> {
-                            PlayerInventory inv = MinecraftClient.getInstance().player.getInventory();
-                            for (int i = 0; i < inv.size(); i++) {
-                                ItemStack s = inv.getStack(i);
-                                if (!s.isEmpty()) c.getSource().sendFeedback(Text.literal("  [" + i + "] " + s.getName().getString() + " x" + s.getCount()));
-                            }
-                            return Command.SINGLE_SUCCESS;
-                        }))));
+        // 4) 명령어: /세공 ... (하위 명령은 한글이 기본이고, 예전 영어 이름과 /segong 도 그대로 된다)
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+            LiteralArgumentBuilder<FabricClientCommandSource> cmd = ClientCommandManager.literal("세공").executes(SegongClient::cmdHelp);   // /세공 만 쳐도 도움말
+            sub(cmd, "도움말", "help", SegongClient::cmdHelp);
+            sub(cmd, "제보", "report", SegongClient::cmdReport);
+            sub(cmd, "설정", "settings", SegongClient::cmdSettings);
+            sub(cmd, "점검", "check", SegongClient::cmdCheck);
+            sub(cmd, "기록", "log", SegongClient::cmdLog);
+            sub(cmd, "인벤", "inv", SegongClient::cmdInv);
+            sub(cmd, "인벤토리", "inventory", SegongClient::cmdInv);
+            sub(cmd, "아이템", "items", SegongClient::cmdItems);
+            sub(cmd, "칸", "slots", SegongClient::cmdSlots);
+            sub(cmd, "보석", "dump", SegongClient::cmdDump);
+            cmd.then(countNode("횟수"));
+            cmd.then(countNode("count"));
+            var root = dispatcher.register(cmd);
+            dispatcher.register(ClientCommandManager.literal("segong").executes(SegongClient::cmdHelp).redirect(root));   // 예전 이름(/segong)도 그대로 쓸 수 있게
+        });
+    }
+
+    // ---------------------------------------------------------------- 명령어
+
+    /** 같은 동작을 한글 이름과 영어 이름 둘 다로 부를 수 있게 붙인다. */
+    private static void sub(LiteralArgumentBuilder<FabricClientCommandSource> parent, String ko, String en, Command<FabricClientCommandSource> run) {
+        parent.then(ClientCommandManager.literal(ko).executes(run));
+        parent.then(ClientCommandManager.literal(en).executes(run));
+    }
+
+    /** /세공 횟수 [추가|빼기 [N]|초기화]  (영어: count [add|sub [N]|reset]) */
+    private static LiteralArgumentBuilder<FabricClientCommandSource> countNode(String name) {
+        LiteralArgumentBuilder<FabricClientCommandSource> n = ClientCommandManager.literal(name).executes(SegongClient::cmdCount);
+        for (String a : new String[]{"추가", "add"}) {
+            n.then(ClientCommandManager.literal(a).executes(c -> cmdCountAdd(c, 1))
+                    .then(ClientCommandManager.argument("n", IntegerArgumentType.integer(1, 999))
+                            .executes(c -> cmdCountAdd(c, IntegerArgumentType.getInteger(c, "n")))));
+        }
+        for (String a : new String[]{"빼기", "sub"}) {
+            n.then(ClientCommandManager.literal(a).executes(c -> cmdCountAdd(c, -1))
+                    .then(ClientCommandManager.argument("n", IntegerArgumentType.integer(1, 999))
+                            .executes(c -> cmdCountAdd(c, -IntegerArgumentType.getInteger(c, "n")))));
+        }
+        for (String a : new String[]{"초기화", "reset"}) {
+            n.then(ClientCommandManager.literal(a).executes(SegongClient::cmdCountReset));
+        }
+        return n;
+    }
+
+    private static void say(CommandContext<FabricClientCommandSource> c, String s) {
+        c.getSource().sendFeedback(Text.literal(s));
+    }
+
+    private static int cmdHelp(CommandContext<FabricClientCommandSource> c) {
+        for (String line : helpLines()) say(c, line);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdReport(CommandContext<FabricClientCommandSource> c) {
+        runReport(MinecraftClient.getInstance(), line -> say(c, line));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdSettings(CommandContext<FabricClientCommandSource> c) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        mc.send(() -> mc.setScreen(new SettingsScreen(null)));   // 채팅창이 닫힌 다음에 열기
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /** 글자를 클립보드로 복사하고 결과를 알려 준다 (복사가 안 되면 안내만). */
+    private static void copyAndTell(CommandContext<FabricClientCommandSource> c, List<String> lines) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        for (String ln : lines) say(c, ln);
+        String msg = "[세공] 위 내용을 클립보드에 복사했어요 (Ctrl+V 로 붙여넣기)";
+        try {
+            GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), String.join("\n", lines));
+        } catch (Throwable e) {
+            msg = "[세공] 클립보드 복사는 못 했어요. 위 글자를 그대로 알려 주세요";
+        }
+        say(c, msg);
+    }
+
+    private static int cmdCheck(CommandContext<FabricClientCommandSource> c) {
+        copyAndTell(c, buildCheck(MinecraftClient.getInstance()));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdLog(CommandContext<FabricClientCommandSource> c) {
+        copyAndTell(c, buildLog());
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdInv(CommandContext<FabricClientCommandSource> c) {
+        long[] n = countOrbs(MinecraftClient.getInstance(), true);
+        say(c, "[세공] 인벤토리 광채: 바이올렛 " + n[0] + " / 오팔 " + n[1] + " / 아다만티움 " + n[2]);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdDump(CommandContext<FabricClientCommandSource> c) {
+        Gem g = lastAnyGem;
+        if (g == null) {
+            say(c, "[세공] 아직 읽은 보석이 없습니다. 보석에 마우스를 올린 뒤 다시 입력하세요");
+            return Command.SINGLE_SUCCESS;
+        }
+        say(c, "[세공] 마지막 보석 (" + g.lines.size() + "줄)");
+        say(c, " 아이템: " + g.info);
+        say(c, " 등급표시 문자: " + (g.sig.isEmpty() ? "(없음)" : g.sig) + " / 글자로 읽은 한도: " + g.gradeLimit);
+        for (int i = 0; i < g.lines.size(); i++) {
+            say(c, "  " + (i + 1) + ") " + esc(g.lines.get(i)));
+            if (i < 2) say(c, "     조각: " + runs(g.texts.get(i)));
+        }
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdCount(CommandContext<FabricClientCommandSource> c) {
+        say(c, "[세공] " + Tally.describe(System.currentTimeMillis()));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdCountAdd(CommandContext<FabricClientCommandSource> c, int delta) {
+        Tally.add(delta);
+        save();
+        say(c, "[세공] 오늘 세공 " + Tally.count + "회 (" + (delta > 0 ? "+" : "") + delta + ")");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdCountReset(CommandContext<FabricClientCommandSource> c) {
+        Tally.reset();
+        save();
+        say(c, "[세공] 오늘 세공 횟수를 0으로 되돌렸어요");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdSlots(CommandContext<FabricClientCommandSource> c) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (!(mc.currentScreen instanceof HandledScreen<?> hs)) {
+            say(c, "[세공] 세공 화면을 연 상태에서 입력하세요");
+            return Command.SINGLE_SUCCESS;
+        }
+        int cnt = 0;
+        for (Slot sl : hs.getScreenHandler().slots) {
+            if (sl.inventory == mc.player.getInventory()) continue;
+            ItemStack st = sl.getStack();
+            if (st.isEmpty()) continue;
+            cnt++;
+            boolean gem = makeGem(st, tooltipTexts(mc, st)) != null;
+            say(c, "  칸" + sl.id + ": " + st.getName().getString() + " x" + st.getCount() + (gem ? "  ← 보석" : ""));
+        }
+        if (cnt == 0) say(c, "[세공] 내 인벤토리가 아닌 칸에 아이템이 없습니다");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int cmdItems(CommandContext<FabricClientCommandSource> c) {
+        PlayerInventory inv = MinecraftClient.getInstance().player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack st = inv.getStack(i);
+            if (!st.isEmpty()) say(c, "  [" + i + "] " + st.getName().getString() + " x" + st.getCount());
+        }
+        return Command.SINGLE_SUCCESS;
+    }
+
+    // ---------------------------------------------------------------- 도움말 · 제보 · 처음 안내
+
+    /** /세공 도움말 에 보여줄 글 (키 이름은 조작 설정에서 바꾼 대로) */
+    static List<String> helpLines() {
+        List<String> out = new ArrayList<>();
+        out.add("§e[세공] §f세공 도우미 v" + modVersion() + " 도움말");
+        out.add(" §e키§f (조작 설정에서 바꿀 수 있어요): " + keyName(toggleKey) + " 켜기/끄기 · " + keyName(gradeKey) + " 등급 바꾸기 · " + keyName(settingsKey) + " 설정 창");
+        out.add(" §e/세공 설정§f : 설정 창 열기");
+        out.add(" §e/세공 횟수§f : 오늘 세공 횟수 보기 (§e추가 N§f · §e빼기 N§f · §e초기화§f 로 고치기, N 은 생략하면 1)");
+        out.add(" §e/세공 제보§f : 문제가 생겼을 때, 제보할 내용을 한 번에 복사");
+        out.add(" §e/세공 점검§f : 지금 상태 점검 · §e/세공 기록§f : 최근 일어난 일");
+        out.add(" §e/세공 인벤§f : 인벤토리 광채 개수 · §e아이템§f · §e칸§f · §e보석§f : 점검용");
+        out.add(" §7(영어 이름 settings · count · report · check · log · inv 와 /segong 도 그대로 돼요)");
+        return out;
+    }
+
+    /** /세공 제보 : 점검 + 최근 기록을 한 번에 클립보드로 복사한다 (복사가 안 되면 채팅창에 그대로 보여줌). */
+    static void runReport(MinecraftClient mc, java.util.function.Consumer<String> say) {
+        List<String> lines = new ArrayList<>(buildCheck(mc));
+        lines.add("");
+        lines.addAll(buildLog());
+        String msg;
+        try {
+            GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), String.join("\n", lines));
+            msg = "[세공] 제보 내용 " + lines.size() + "줄을 복사했어요. 디스코드에 Ctrl+V 로 붙여넣어 주세요";
+        } catch (Throwable e) {
+            for (String ln : lines) say.accept(ln);
+            msg = "[세공] 복사는 못 했어요. 위 글자를 그대로 알려 주세요";
+        }
+        say.accept(msg);
+    }
+
+    private static boolean welcomed;      // 처음 안내를 이미 보여줬는지 (설정 파일 welcomed)
+    private static int welcomeWait;
+
+    /** 처음 켠 뒤 게임에 들어가면 안내를 채팅창에 딱 한 번만 보여준다. */
+    private static void tickWelcome(MinecraftClient client) {
+        if (welcomed) return;
+        if (client.player == null) {
+            welcomeWait = 0;
+            return;
+        }
+        if (++welcomeWait < 100) return;      // 접속하고 5초 뒤에 (서버 입장 메시지에 묻히지 않게)
+        welcomed = true;
+        save();
+        client.player.sendMessage(Text.literal("§e[세공] §f세공 도우미가 켜졌어요! 설정은 §e" + keyName(settingsKey)
+                + "§f 키, 명령어 목록은 §e/세공 도움말§f 을 입력하세요."), false);
     }
 
     // ---------------------------------------------------------------- 오늘 세공 횟수
@@ -718,6 +826,15 @@ public class SegongClient implements ClientModInitializer {
     }
 
     /** 설치된 모드 버전 (jar 이름과 같은 값) */
+    private static String modVer(String id) {
+        try {
+            return FabricLoader.getInstance().getModContainer(id)
+                    .map(m -> m.getMetadata().getVersion().getFriendlyString()).orElse("?");
+        } catch (Throwable e) {
+            return "?";
+        }
+    }
+
     static String modVersion() {
         try {
             return FabricLoader.getInstance().getModContainer("segong")
@@ -731,10 +848,11 @@ public class SegongClient implements ClientModInitializer {
 
     private static String triple(long a, long b, long c) { return a + "/" + b + "/" + c; }
 
-    /** /segong check 에 보여줄 점검 내용 (문제가 생겼을 때 이 글자를 그대로 알려 주면 된다) */
+    /** /세공 점검 에 보여줄 점검 내용 (문제가 생겼을 때 이 글자를 그대로 알려 주면 된다) */
     static List<String> buildCheck(MinecraftClient mc) {
         List<String> out = new ArrayList<>();
         out.add("[세공] 점검 v" + modVersion());
+        out.add(" 환경: 마인크래프트 " + modVer("minecraft") + " · Fabric API " + modVer("fabric-api"));
         out.add(" 설정: " + onOff(enabled) + " · " + STYLE_NAME[style] + " · " + THEME_NAME[theme] + " · 아이콘 " + onOff(icons)
                 + " · 추천 고정 " + onOff(lock) + " · 글자 " + String.format("%.2f", scale) + "배 · 등급 " + GRADE_NAME[gradeMode]);
         out.add(" 오류: 총 " + Guard.total + "번" + (Guard.total > 0 ? " · 마지막 " + Guard.lastError : "")
@@ -830,6 +948,7 @@ public class SegongClient implements ClientModInitializer {
             Tally.day = pr.getProperty("tally.day", "");
             Tally.count = Math.max(0, Integer.parseInt(pr.getProperty("tally.count", "0")));
             for (int k = 0; k < 3; k++) orbSnbt[k] = pr.getProperty("icon." + k);
+            welcomed = "true".equals(pr.getProperty("welcomed", "false"));
             tallySep = "true".equals(pr.getProperty("tally.sep", "false"));
             tallyX = Float.parseFloat(pr.getProperty("tally.px", "-1"));
             tallyY = Float.parseFloat(pr.getProperty("tally.py", "-1"));
@@ -858,6 +977,7 @@ public class SegongClient implements ClientModInitializer {
             pr.setProperty("tally.day", Tally.day);
             pr.setProperty("tally.count", String.valueOf(Tally.count));
             for (int k = 0; k < 3; k++) if (orbSnbt[k] != null) pr.setProperty("icon." + k, orbSnbt[k]);
+            pr.setProperty("welcomed", String.valueOf(welcomed));
             pr.setProperty("tally.sep", String.valueOf(tallySep));
             pr.setProperty("tally.px", String.valueOf(tallyX));
             pr.setProperty("tally.py", String.valueOf(tallyY));

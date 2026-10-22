@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
-/** 세공 도우미 설정 화면 (다크 약방 · 우드카드 · 크림 디자인). 게임 중 설정 키 또는 /segong settings 로 연다. */
+/** 세공 도우미 설정 화면 (다크 약방 · 우드카드 · 크림 디자인). 게임 중 설정 키 또는 /세공 설정 으로 연다. */
 class SettingsScreen extends Screen {
     // 색 (테마에 따라 applyTheme() 가 채운다)
     private int PANEL, EDGE_OUT, EDGE_IN, TITLE, TXT, SUB, LINE;

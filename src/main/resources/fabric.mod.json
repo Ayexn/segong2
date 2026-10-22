@@ -3,11 +3,12 @@
   "id": "segong",
   "version": "${version}",
   "name": "세공 도우미",
-  "description": "보석 정보(순도/광도/강도)와 인벤토리의 광채 개수를 읽어 쓸 광채 개수를 화면에 보여줍니다. 표시용이며 자동 클릭이나 서버 통신은 하지 않습니다.",
+  "description": "보석의 순도·광도·강도를 읽고, 쓸 광채 개수를 알려 줘요. 띵타이쿤 세공 화면에서 보석 수치와 내 인벤토리의 광채 개수를 읽어 카드로 보여줘요. 표시만 하는 모드예요. 자동 클릭, 서버로 보내기, 아이템 옮기기는 하지 않아요.",
   "authors": [
     "세공 도우미"
   ],
   "license": "MIT",
+  "icon": "assets/segong/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": [
