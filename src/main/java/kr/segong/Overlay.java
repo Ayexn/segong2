@@ -22,11 +22,8 @@ final class Overlay {
     private static int hitX, hitY, hitW, hitH;
     private static boolean dragging, prevDown;
     private static int grabDX, grabDY;
-    // "오늘 세공 횟수" 알약을 카드와 따로 띄울 때: 알약의 위치와 끌기 상태 (카드와 별개)
-    private static int tHitX, tHitY, tHitW, tHitH;
-    private static boolean tDragging, tPrevDown;
-    private static int tGrabDX, tGrabDY;
-    private static int cardBottom;      // 마지막으로 그린 카드의 아래쪽 y (한 줄형일 때 알약 기본 위치용)
+    private static int cardBottom;      // 마지막으로 그린 카드의 아래쪽 y
+    private static int cardX, cardTop, cardW;   // 마지막으로 그린 카드의 왼쪽 x · 위쪽 y · 너비 (보석별 기록 표시를 붙이는 자리)
 
     private Overlay() {}
 
@@ -97,7 +94,7 @@ final class Overlay {
         };
     }
 
-    static void clearHit() { hitW = 0; hitH = 0; tHitW = 0; tHitH = 0; }
+    static void clearHit() { hitW = 0; hitH = 0; cardW = 0; }
 
     /** 광채 그림 (설정이 꺼져 있거나 인벤토리에서 못 봤으면 null) */
     private static ItemStack icon(int k) {
@@ -115,28 +112,6 @@ final class Overlay {
         return v.r.missing > 0 ? red : normal;
     }
 
-    /** 오늘 세공 횟수 문구 (v.tally 가 0 이상일 때만 표시) */
-    static String tallyLabel(SegongClient.View v) {
-        return "오늘 세공 " + v.tally + "회";
-    }
-
-    /** 가운데 cx, 위 y 에 놓는 "오늘 세공 N회" 알약 (높이 14). 다크 약방은 등급 알약과 같은 금색. */
-    private static void tallyChip(Pen p, SegongClient.View v, int cx, int y) {
-        chipAt(p, tallyLabel(v), cx, y);
-    }
-
-    private static void chipAt(Pen p, String s, int cx, int y) {
-        int w = p.tr.getWidth(s) + 14, x = cx - w / 2;
-        if (SegongClient.theme == 0) {
-            if (p.on) Apo.pill(p.ctx, x, y, w, 14, Apo.P_FILL, Apo.OUT, Apo.P_HI, Apo.P_LO, 1);
-            p.plain(s, x + 7, y + 3, Apo.P_TXT);
-        } else {
-            p.rect(x, y, x + w, y + 14, SegongClient.theme == 1 ? W_OUT : T_EDGE_OUT);
-            p.rect(x + 1, y + 1, x + w - 1, y + 13, T_GOLD);
-            p.plain(s, x + 7, y + 3, T_EDGE_OUT);
-        }
-    }
-
     /** 추천 개수가 가진 개수와 같거나 많으면(= 다 쓰는 경우) 보유 글자를 주황색으로 */
     static int stockCol(SegongClient.View v, int k, int normal) {
         if (v.r == null) return normal;
@@ -149,14 +124,10 @@ final class Overlay {
     }
 
     static boolean hit(double mx, double my) {
-        return (hitW > 0 && mx >= hitX && mx < hitX + hitW && my >= hitY && my < hitY + hitH) || tHit(mx, my);
+        return hitW > 0 && mx >= hitX && mx < hitX + hitW && my >= hitY && my < hitY + hitH;
     }
 
-    private static boolean tHit(double mx, double my) {
-        return tHitW > 0 && mx >= tHitX && mx < tHitX + tHitW && my >= tHitY && my < tHitY + tHitH;
-    }
-
-    static boolean isDragging() { return dragging || tDragging; }
+    static boolean isDragging() { return dragging; }
 
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -182,7 +153,7 @@ final class Overlay {
                 // 읽지 못하면 끌기 없이 표시만
             }
             boolean inside = mx >= xy[0] && mx < xy[0] + pw && my >= xy[1] && my < xy[1] + ph;
-            if (down && !prevDown && inside && !tHit(mx, my)) { dragging = true; grabDX = mx - xy[0]; grabDY = my - xy[1]; }   // 알약이 위에 있으면 알약이 먼저
+            if (down && !prevDown && inside) { dragging = true; grabDX = mx - xy[0]; grabDY = my - xy[1]; }
             boolean wasDragging = dragging;
             if (!down) dragging = false;
             if (dragging) {
@@ -198,6 +169,7 @@ final class Overlay {
             hitX = xy[0]; hitY = xy[1]; hitW = pw; hitH = ph;
         }
         cardBottom = xy[1] + ph;
+        cardX = xy[0]; cardTop = xy[1]; cardW = pw;
         MatrixStack m = ctx.getMatrices();
         m.push();
         try {
@@ -218,66 +190,102 @@ final class Overlay {
         if (style == 3) badges(mc, ctx, v);
     }
 
+    // ---------------------------------------------------------------- 오늘한 세공 기록 (카드 아래 작은 표)
+    private static final int JOURNAL_ROWS = 4;      // 한 번에 보여줄 줄 수 (넘치면 "외 N종")
+
+    /** 설정 미리보기용 예시 줄 */
+    private static java.util.List<Journal.Row> sampleRows() {
+        java.util.List<Journal.Row> l = new java.util.ArrayList<>();
+        l.add(new Journal.Row("Rare", "테라온", 3));
+        l.add(new Journal.Row("Common", "키론", 2));
+        l.add(new Journal.Row("Normal", "라온", 1));
+        return l;
+    }
+
+    /** 등급 글자 색 (바탕에 따라 밝기를 맞춘다) */
+    static int gradeCol(String grade, int theme) {
+        int i = Journal.rank(grade);
+        if (theme == 2) return new int[]{0xFF8A6A45, 0xFF2F8A4A, 0xFF2B6FB8, 0xFF8A3FC9, 0xFFB86A00, 0xFFB5533C, 0xFF8A6A45, 0xFF8A6A45, 0xFF8A6A45, 0xFF8A6A45}[i];
+        if (theme == 1) return new int[]{W_SUB, 0xFFB8F0B0, 0xFFB5E4FF, 0xFFE3C4FF, 0xFFFFD27A, 0xFFFFB0A0, W_SUB, W_SUB, W_SUB, W_SUB}[i];
+        return new int[]{GRAY, GREEN, 0xFF6FB6FF, VIO, 0xFFFFB04A, 0xFFFF6A6A, GRAY, GRAY, GRAY, GRAY}[i];
+    }
+
     /**
-     * "오늘 세공 N회" 알약만 카드와 따로 그린다 (설정에서 '따로 띄우기'를 켰을 때).
-     * 위치는 알약 혼자 끌어서 옮기고(tallyX/tallyY), 정하지 않았으면 화면 위 가운데
-     * (한 줄형이면 카드 바로 아래)에 놓는다.
+     * 카드 바로 아래에 "오늘한 세공" 작은 표를 그린다 (카드를 옮기면 같이 따라간다).
+     * 아래에 자리가 없으면 카드 위에 붙인다. sample=true 면 설정 미리보기용 예시 줄을 쓴다.
      */
-    static void renderTally(MinecraftClient mc, DrawContext ctx, int count, int mx, int my, boolean interactive) {
-        float s = SegongClient.scale;
-        String label = "오늘 세공 " + count + "회";
-        int cw = mc.textRenderer.getWidth(label) + 14;
-        int pw = Math.round(cw * s), ph = Math.round(14 * s);
+    static void renderJournal(MinecraftClient mc, DrawContext ctx, boolean sample) {
+        if (cardW <= 0) return;
+        java.util.List<Journal.Row> rows = sample ? sampleRows() : Journal.rows(SegongClient.today());
+        int more = Math.max(0, rows.size() - JOURNAL_ROWS);
+        if (more > 0) rows = rows.subList(0, JOURNAL_ROWS);
+        TextRenderer tr = mc.textRenderer;
+        int th = SegongClient.theme;
+        String title = "오늘한 세공", none = "아직 없어요", moreTxt = "외 " + more + "종";
+        int nameW = 0, gradeW = 0, cntW = 0;
+        for (Journal.Row r : rows) {
+            nameW = Math.max(nameW, tr.getWidth(r.name));
+            gradeW = Math.max(gradeW, tr.getWidth(r.grade));
+            cntW = Math.max(cntW, tr.getWidth(r.n + "회"));
+        }
+        int body = rows.isEmpty() ? tr.getWidth(none) : nameW + 6 + gradeW + 10 + cntW;
+        if (more > 0) body = Math.max(body, tr.getWidth(moreTxt));
+        int w = Math.max(tr.getWidth(title), body) + 12;
+        int lines = rows.isEmpty() ? 1 : rows.size() + (more > 0 ? 1 : 0);
+        int h = 5 + 11 + lines * 10 + 5;
+
+        float ps = Math.min(1f, SegongClient.scale);
+        int pw = Math.round(w * ps), ph = Math.round(h * ps);
         int sw = mc.getWindow().getScaledWidth(), sh = mc.getWindow().getScaledHeight();
-        int[] xy;
-        if (SegongClient.tallyX >= 0 && SegongClient.tallyY >= 0) {
-            xy = new int[]{clamp(Math.round(SegongClient.tallyX * sw), 0, Math.max(0, sw - pw)),
-                           clamp(Math.round(SegongClient.tallyY * sh), 0, Math.max(0, sh - ph))};
-        } else {
-            int y = (SegongClient.style == 2 && cardBottom > 0) ? cardBottom + 4 : 6;
-            xy = new int[]{(sw - pw) / 2, clamp(y, 0, Math.max(0, sh - ph))};
-        }
-        boolean hover = false;
-        if (interactive) {
-            boolean down = false;
-            try {
-                down = GLFW.glfwGetMouseButton(mc.getWindow().getHandle(), GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
-            } catch (Throwable e) {
-                // 읽지 못하면 끌기 없이 표시만
-            }
-            boolean inside = mx >= xy[0] && mx < xy[0] + pw && my >= xy[1] && my < xy[1] + ph;
-            if (down && !tPrevDown && inside && !dragging) { tDragging = true; tGrabDX = mx - xy[0]; tGrabDY = my - xy[1]; }
-            boolean was = tDragging;
-            if (!down) tDragging = false;
-            if (tDragging) {
-                int nx = clamp(mx - tGrabDX, 0, Math.max(0, sw - pw)), ny = clamp(my - tGrabDY, 0, Math.max(0, sh - ph));
-                xy = new int[]{nx, ny};
-                SegongClient.tallyX = (float) nx / sw;
-                SegongClient.tallyY = (float) ny / sh;
-            } else if (was) {
-                SegongClient.save();
-            }
-            tPrevDown = down;
-            hover = inside || tDragging;
-            tHitX = xy[0]; tHitY = xy[1]; tHitW = pw; tHitH = ph;
-        }
+        int x = cardX;
+        int y = cardBottom + 4;
+        if (y + ph > sh - 2) y = cardTop - ph - 4;                       // 아래에 자리가 없으면 카드 위로
+        if (y < 2) y = Math.max(2, sh - ph - 2);
+        if (x + pw > sw - 2) x = sw - pw - 2;
+        x = Math.max(2, x);
+
         MatrixStack m = ctx.getMatrices();
         m.push();
         try {
-            m.translate((float) xy[0], (float) xy[1], 0f);
-            m.scale(s, s, 1f);
-            chipAt(new Pen(mc.textRenderer, ctx, true), label, cw / 2, 0);
+            m.translate((float) x, (float) y, 0f);
+            m.scale(ps, ps, 1f);
+            Pen p = new Pen(tr, ctx, true);
+            boolean shadow = th != 2;
+            int tCol, txt, sub, line;
+            if (th == 0) {
+                p.frame(w, h);
+                tCol = YEL; txt = WHITE; sub = GRAY; line = 0x33FFFFFF;
+            } else if (th == 1) {
+                p.rect(0, 0, w, h, W_OUT); p.rect(1, 1, w - 1, h - 1, W_BODY);
+                p.rect(1, 1, w - 1, 2, W_HI); p.rect(1, 1, 2, h - 1, W_HI);
+                p.rect(1, h - 2, w - 1, h - 1, W_SH); p.rect(w - 2, 1, w - 1, h - 1, W_SH);
+                tCol = W_OK; txt = W_CREAM; sub = W_SUB; line = W_SH;
+            } else {
+                p.rect(0, 0, w, h, T_EDGE_OUT); p.rect(1, 1, w - 1, h - 1, T_PANEL);
+                tCol = T_TITLE; txt = T_TXT; sub = T_SUB; line = T_TRACK;
+            }
+            jtext(p, title, 6, 5, tCol, shadow);
+            p.rect(5, 15, w - 5, 16, line);
+            int ry = 18;
+            if (rows.isEmpty()) {
+                jtext(p, none, 6, ry, sub, shadow);
+            } else {
+                for (Journal.Row r : rows) {
+                    jtext(p, r.name, 6, ry, txt, shadow);
+                    jtext(p, r.grade, 6 + nameW + 6, ry, gradeCol(r.grade, th), shadow);
+                    String c = r.n + "회";
+                    jtext(p, c, w - 6 - tr.getWidth(c), ry, tCol, shadow);
+                    ry += 10;
+                }
+                if (more > 0) jtext(p, moreTxt, 6, ry, sub, shadow);
+            }
         } finally {
             m.pop();
         }
-        if (hover) {
-            int g = 0xFFFFD76A;
-            ctx.fill(xy[0] - 1, xy[1] - 1, xy[0] + pw + 1, xy[1], g);
-            ctx.fill(xy[0] - 1, xy[1] + ph, xy[0] + pw + 1, xy[1] + ph + 1, g);
-            ctx.fill(xy[0] - 1, xy[1] - 1, xy[0], xy[1] + ph + 1, g);
-            ctx.fill(xy[0] + pw, xy[1] - 1, xy[0] + pw + 1, xy[1] + ph + 1, g);
-            ctx.drawText(mc.textRenderer, "끌어서 이동", xy[0], xy[1] >= 11 ? xy[1] - 10 : xy[1] + ph + 2, 0xFFFFD76A, true);
-        }
+    }
+
+    private static void jtext(Pen p, String s, int x, int y, int c, boolean shadow) {
+        if (shadow) p.text(s, x, y, c); else p.plain(s, x, y, c);
     }
 
     private static int[] anchor(int pos, int style, int w, int h, int sw, int sh) {
@@ -456,11 +464,6 @@ final class Overlay {
         String last = LABEL[2] + " " + after[2];
         p.plain(last, w - bm - p.tr.getWidth(last), y, cTxt);
         int endY = y + (apo ? 20 : wood ? 19 : 16);
-        if (v.tally >= 0) {
-            int cy = y + (apo ? 14 : wood ? 12 : 11);
-            tallyChip(p, v, w / 2, cy);
-            endY = cy + 14 + (apo ? 9 : wood ? 8 : 6);
-        }
         return new int[]{w, endY};
     }
 
@@ -517,10 +520,6 @@ final class Overlay {
         }
         p.text("합 " + v.r.sum + " / " + v.lim, 18, 137, Apo.OK);
         p.textRight(usedLabel(v), w - 18, 137, usedCol(v, Apo.SUB, Apo.RED));
-        if (v.tally >= 0) {
-            tallyChip(p, v, w / 2, 150);
-            return new int[]{w, 174};
-        }
         return new int[]{w, 156};
     }
 
@@ -566,10 +565,6 @@ final class Overlay {
         }
         p.text("합 " + v.r.sum + " / " + v.lim, 10, 130, W_OK);
         p.textRight(usedLabel(v), w - 10, 130, usedCol(v, W_SUB, W_RED));
-        if (v.tally >= 0) {
-            tallyChip(p, v, w / 2, 145);
-            return new int[]{w, 166};
-        }
         return new int[]{w, 146};
     }
 
@@ -612,10 +607,6 @@ final class Overlay {
         y += 3;
         p.text("합 " + v.r.sum + " / " + v.lim, 6, y, GREEN);
         p.textRight(usedLabel(v), w - 6, y, usedCol(v, GRAY, 0xFFFF8F8F));
-        if (v.tally >= 0) {
-            tallyChip(p, v, w / 2, y + 13);
-            return new int[]{w, y + 32};
-        }
         return new int[]{w, y + 14};
     }
 
@@ -648,11 +639,6 @@ final class Overlay {
             x += G;
             x += p.text("§7·", x, y, WHITE) + G;
             x += p.text("§c" + v.r.missing + "개 부족", x, y, WHITE);
-        }
-        if (v.tally >= 0) {
-            x += G;
-            x += p.text("§7│", x, y, WHITE) + G;
-            x += p.text("§e오늘 " + v.tally + "회", x, y, WHITE);
         }
         return x - x0;
     }
@@ -705,7 +691,6 @@ final class Overlay {
         } else {
             l1 = "§a합 " + v.r.sum + " / " + v.lim + " §7· §6" + gradeLabel(v.lim);
             if (v.r.missing > 0) l1 += " §7· §c" + v.r.missing + "개 부족";
-            if (v.tally >= 0) l1 += " §7· §e오늘 " + v.tally + "회";
         }
         final int th = SegongClient.theme;      // 0 약방 / 1 우드 / 2 크림
         boolean wood = th <= 1, apo = th == 0;

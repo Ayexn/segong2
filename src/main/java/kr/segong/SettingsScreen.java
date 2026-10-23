@@ -61,7 +61,6 @@ class SettingsScreen extends Screen {
     private boolean sliderDrag;
     private boolean confirmReset;     // "설정 기본값으로" 를 한 번 눌러 확인 대기 중
     private Btn resetBtn;
-    private Btn tallyBtn;
 
     SettingsScreen(Screen parent) {
         super(Text.literal("세공 도우미 설정"));
@@ -81,7 +80,7 @@ class SettingsScreen extends Screen {
         btns.clear();
         applyTheme();
         pw = Math.min(width - 16, 400);
-        ph = Math.min(height - 16, 290);
+        ph = Math.min(height - 16, 272);
         pl = (width - pw) / 2;
         pt = (height - ph) / 2;
         cx0 = pl + (apo ? 96 : 92);
@@ -121,25 +120,13 @@ class SettingsScreen extends Screen {
         x += b.w + 4;
         add(x, y, "꺼짐", () -> !SegongClient.lock, () -> { SegongClient.lock = false; Plan.clear(); SegongClient.save(); }, false);
 
-        // 세공 횟수 (오늘 몇 번 했는지 표시 / 고치기). 광채가 소모될 때마다 1번.
+        // 오늘한 세공 (카드 아래에 오늘 어떤 보석을 몇 번 했는지 작게 표시) + 통계 창 열기
         y += gap; x = cx0;
-        b = add(x, y, "켜짐", () -> Tally.show, () -> { Tally.show = true; SegongClient.save(); }, false);
+        b = add(x, y, "켜짐", () -> Journal.show, () -> { Journal.show = true; SegongClient.save(); }, false);
         x += b.w + 4;
-        b = add(x, y, "꺼짐", () -> !Tally.show, () -> { Tally.show = false; SegongClient.save(); }, false);
+        b = add(x, y, "꺼짐", () -> !Journal.show, () -> { Journal.show = false; SegongClient.save(); }, false);
         x += b.w + 12;
-        b = add(x, y, "-1", () -> false, () -> { Tally.add(-1); SegongClient.save(); }, false);
-        x += b.w + 4;
-        b = add(x, y, "+1", () -> false, () -> { Tally.add(1); SegongClient.save(); }, false);
-        x += b.w + 4;
-        tallyBtn = add(x, y, "0으로", () -> false, () -> { Tally.reset(); SegongClient.save(); }, false);
-
-        // 횟수 표시 위치: 카드 안 / 따로 띄우기 (따로면 알약만 끌어서 옮길 수 있음)
-        y += gap; x = cx0;
-        b = add(x, y, "카드 안", () -> !SegongClient.tallySep, () -> { SegongClient.tallySep = false; SegongClient.save(); }, false);
-        x += b.w + 4;
-        b = add(x, y, "따로 띄우기", () -> SegongClient.tallySep, () -> { SegongClient.tallySep = true; SegongClient.save(); }, false);
-        x += b.w + 12;
-        add(x, y, "횟수 위치 초기화", () -> SegongClient.tallyX < 0, () -> SegongClient.resetTallyPos(), false);
+        add(x, y, "통계 보기", () -> false, () -> { if (client != null) client.setScreen(new StatsScreen(this)); }, false);
 
         // 글자 크기 (슬라이더)
         y += gap;
@@ -265,7 +252,7 @@ class SettingsScreen extends Screen {
 
         // 줄 이름
         int gap = ROW_GAP, y = pt + (apo ? 34 : 38), lx = pl + (apo ? 18 : 14);
-        String[] labels = {"동작", "표시 방식", "디자인", "아이콘", "추천 고정", "세공 횟수", "횟수 표시", "글자 크기", "위치", "등급"};
+        String[] labels = {"동작", "표시 방식", "디자인", "아이콘", "추천 고정", "오늘한 세공", "글자 크기", "위치", "등급"};
         for (int i = 0; i < labels.length; i++) {
             c.drawText(textRenderer, labels[i], lx, y + gap * i + 5, TXT, wood);
         }
@@ -308,11 +295,6 @@ class SettingsScreen extends Screen {
             }
         }
 
-        // 세공 횟수 줄 오른쪽에 지금 횟수
-        if (tallyBtn != null) {
-            c.drawText(textRenderer, "오늘 " + Tally.count + "회", tallyBtn.x + tallyBtn.w + 10, tallyBtn.y + 5, INFO, wood);
-        }
-
         // 아래 안내 (광채 개수는 그림이 있으면 그림 + 숫자로)
         long[] n = SegongClient.countOrbs(client);
         int ly = pt + ph - (apo ? 60 : 52);
@@ -350,7 +332,7 @@ class SettingsScreen extends Screen {
         // 실제 위치 미리보기
         try {
             Overlay.render(client, c, SegongClient.sampleView(), -1, -1, false);
-            if (SegongClient.tallySep && Tally.show) Overlay.renderTally(client, c, Tally.count, -1, -1, false);
+            if (Journal.show) Overlay.renderJournal(client, c, true);
         } catch (Throwable e) {
             SegongClient.noteError(e);     // 미리보기가 실패해도 설정 화면은 계속 쓸 수 있게
         }

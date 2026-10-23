@@ -73,7 +73,7 @@ final class Plan {
         return r;
     }
 
-    /** 점검용: 기억 중인 계획을 글자로 (/세공 점검) */
+    /** 점검용: 기억 중인 계획을 글자로 (/세공 제보) */
     static List<String> describe() {
         List<String> out = new ArrayList<>();
         for (int i = 0; i < book.size(); i++) {

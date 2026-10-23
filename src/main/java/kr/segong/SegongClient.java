@@ -1,7 +1,7 @@
 package kr.segong;
 
 import com.mojang.brigadier.Command;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.api.ClientModInitializer;
@@ -40,6 +40,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -69,7 +70,6 @@ public class SegongClient implements ClientModInitializer {
         Calc.Result r;           // lim == 0 이면 null
         long[] stock;
         String sig = "";
-        int tally = -1;          // 오늘 세공 횟수 (표시를 끄면 -1)
     }
 
     /** 읽어 낸 보석 한 개 */
@@ -94,10 +94,6 @@ public class SegongClient implements ClientModInitializer {
     static final ItemStack[] orbIcon = new ItemStack[3];   // 본 적 있는 광채 아이템 (그림 표시용)
     private static final String[] orbSnbt = new String[3];  // 그 아이템을 글자로 저장한 것 (설정 파일 icon.0~2). 게임을 껐다 켜도 그림을 쓰려고
     private static final boolean[] orbRestoreFailed = new boolean[3];
-    static boolean tallySep;                                    // 오늘 세공 횟수를 카드와 따로 띄우기
-    static float tallyX = -1f, tallyY = -1f;                    // 따로 띄운 알약 위치(화면 비율). -1 이면 자동
-    private static long lastGemAt;                              // 가장 최근에 보석을 본 시각
-    private static final long TALLY_KEEP_MS = 30_000;           // 보석이 없어져도 이만큼은 알약을 계속 보여줌
     static float customX = -1f, customY = -1f;   // 끌어서 옮긴 위치(화면 비율). -1 이면 자동
     private static final Map<String, Integer> learned = new HashMap<>();   // 등급 표시 문자 → 한도
 
@@ -108,7 +104,7 @@ public class SegongClient implements ClientModInitializer {
     private static long moduleScanAt;
     private static Gem currentGem;        // 지금 화면에 표시 중인 보석
     private static Gem lastAnyGem;        // 가장 최근에 본 보석 (/세공 보석 용)
-    private static View lastView;         // 가장 최근에 그린 추천 (/세공 점검 용)
+    private static View lastView;         // 가장 최근에 그린 추천 (/세공 제보 용)
     private static long lastViewAt;
     private static String lastScreen = "";
     private static long[] uiOrbs = new long[3];    // 열린 화면의 '인벤토리 밖' 칸에서 본 광채 아이템 개수 (점검용, 계산에는 안 씀)
@@ -124,7 +120,7 @@ public class SegongClient implements ClientModInitializer {
     private static int noGradeFrames;     // 점검용: 보석은 읽었는데 등급 한도를 못 구한 화면 수
     private static int screenInits;       // 점검용: 화면이 새로 열린 횟수
 
-    // 최근 일어난 일 기록 (/세공 기록): 깜빡임·보유·횟수가 이상할 때 원인을 찾으려고
+    // 최근 일어난 일 기록 (/세공 제보 에 들어간다): 깜빡임·보유·횟수가 이상할 때 원인을 찾으려고
     private static final int EV_MAX = 60;
     private static final String[] evText = new String[EV_MAX];
     private static final long[] evAt = new long[EV_MAX];
@@ -178,13 +174,13 @@ public class SegongClient implements ClientModInitializer {
     private static void onDrawError(Throwable e) {
         evOnce("그리기 오류: " + Guard.describe(e));
         if (Guard.drawFailed(e, System.currentTimeMillis())) {
-            flash("오류가 반복돼서 세공 도우미를 잠시 껐어요 (" + keyName(toggleKey) + " 키로 다시 켜기 · /세공 점검 으로 확인)");
+            flash("오류가 반복돼서 세공 도우미를 잠시 껐어요 (" + keyName(toggleKey) + " 키로 다시 켜기 · /세공 제보 로 알려 주세요)");
         }
     }
 
     /** 아이콘 그리기 실패: 아이콘만 끄고 나머지는 계속 보여준다. */
     static void iconFailed(Throwable e) {
-        if (Guard.iconFailed(e)) flash("아이콘을 그리지 못해서 아이콘만 껐어요 (/세공 점검 으로 확인)");
+        if (Guard.iconFailed(e)) flash("아이콘을 그리지 못해서 아이콘만 껐어요 (/세공 제보 로 알려 주세요)");
     }
 
     /** 그릴 광채 아이콘 (꺼져 있거나 아직 못 봤거나 그리기에 실패했으면 null) */
@@ -240,6 +236,7 @@ public class SegongClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         load();
+        loadJournal();
         seedDefaults();
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.segong.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_V, "category.segong"));
         gradeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.segong.grade", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, "category.segong"));
@@ -265,7 +262,6 @@ public class SegongClient implements ClientModInitializer {
                 while (toggleKey.wasPressed()) doToggle();
                 while (gradeKey.wasPressed()) doGrade();
                 while (settingsKey.wasPressed()) client.setScreen(new SettingsScreen(null));
-                tickTally(client);
                 tickWelcome(client);
             } catch (Throwable e) {
                 noteError(e);
@@ -304,15 +300,13 @@ public class SegongClient implements ClientModInitializer {
             sub(cmd, "도움말", "help", SegongClient::cmdHelp);
             sub(cmd, "제보", "report", SegongClient::cmdReport);
             sub(cmd, "설정", "settings", SegongClient::cmdSettings);
-            sub(cmd, "점검", "check", SegongClient::cmdCheck);
-            sub(cmd, "기록", "log", SegongClient::cmdLog);
             sub(cmd, "인벤", "inv", SegongClient::cmdInv);
             sub(cmd, "인벤토리", "inventory", SegongClient::cmdInv);
             sub(cmd, "아이템", "items", SegongClient::cmdItems);
             sub(cmd, "칸", "slots", SegongClient::cmdSlots);
             sub(cmd, "보석", "dump", SegongClient::cmdDump);
-            cmd.then(countNode("횟수"));
-            cmd.then(countNode("count"));
+            cmd.then(statsNode("통계"));
+            cmd.then(statsNode("stats"));
             var root = dispatcher.register(cmd);
             dispatcher.register(ClientCommandManager.literal("segong").executes(SegongClient::cmdHelp).redirect(root));   // 예전 이름(/segong)도 그대로 쓸 수 있게
         });
@@ -326,23 +320,16 @@ public class SegongClient implements ClientModInitializer {
         parent.then(ClientCommandManager.literal(en).executes(run));
     }
 
-    /** /세공 횟수 [추가|빼기 [N]|초기화]  (영어: count [add|sub [N]|reset]) */
-    private static LiteralArgumentBuilder<FabricClientCommandSource> countNode(String name) {
-        LiteralArgumentBuilder<FabricClientCommandSource> n = ClientCommandManager.literal(name).executes(SegongClient::cmdCount);
-        for (String a : new String[]{"추가", "add"}) {
-            n.then(ClientCommandManager.literal(a).executes(c -> cmdCountAdd(c, 1))
-                    .then(ClientCommandManager.argument("n", IntegerArgumentType.integer(1, 999))
-                            .executes(c -> cmdCountAdd(c, IntegerArgumentType.getInteger(c, "n")))));
-        }
-        for (String a : new String[]{"빼기", "sub"}) {
-            n.then(ClientCommandManager.literal(a).executes(c -> cmdCountAdd(c, -1))
-                    .then(ClientCommandManager.argument("n", IntegerArgumentType.integer(1, 999))
-                            .executes(c -> cmdCountAdd(c, -IntegerArgumentType.getInteger(c, "n")))));
-        }
-        for (String a : new String[]{"초기화", "reset"}) {
-            n.then(ClientCommandManager.literal(a).executes(SegongClient::cmdCountReset));
-        }
-        return n;
+    /** /세공 통계 : 통계 창을 연다 (뒤에 무슨 글자를 붙여도 그냥 연다)  (영어: stats) */
+    private static LiteralArgumentBuilder<FabricClientCommandSource> statsNode(String name) {
+        return ClientCommandManager.literal(name).executes(SegongClient::cmdStats)
+                .then(ClientCommandManager.argument("etc", StringArgumentType.greedyString()).executes(SegongClient::cmdStats));
+    }
+
+    private static int cmdStats(CommandContext<FabricClientCommandSource> c) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        mc.send(() -> mc.setScreen(new StatsScreen(null)));   // 채팅창이 닫힌 다음에 열기
+        return Command.SINGLE_SUCCESS;
     }
 
     private static void say(CommandContext<FabricClientCommandSource> c, String s) {
@@ -365,29 +352,6 @@ public class SegongClient implements ClientModInitializer {
         return Command.SINGLE_SUCCESS;
     }
 
-    /** 글자를 클립보드로 복사하고 결과를 알려 준다 (복사가 안 되면 안내만). */
-    private static void copyAndTell(CommandContext<FabricClientCommandSource> c, List<String> lines) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        for (String ln : lines) say(c, ln);
-        String msg = "[세공] 위 내용을 클립보드에 복사했어요 (Ctrl+V 로 붙여넣기)";
-        try {
-            GLFW.glfwSetClipboardString(mc.getWindow().getHandle(), String.join("\n", lines));
-        } catch (Throwable e) {
-            msg = "[세공] 클립보드 복사는 못 했어요. 위 글자를 그대로 알려 주세요";
-        }
-        say(c, msg);
-    }
-
-    private static int cmdCheck(CommandContext<FabricClientCommandSource> c) {
-        copyAndTell(c, buildCheck(MinecraftClient.getInstance()));
-        return Command.SINGLE_SUCCESS;
-    }
-
-    private static int cmdLog(CommandContext<FabricClientCommandSource> c) {
-        copyAndTell(c, buildLog());
-        return Command.SINGLE_SUCCESS;
-    }
-
     private static int cmdInv(CommandContext<FabricClientCommandSource> c) {
         long[] n = countOrbs(MinecraftClient.getInstance(), true);
         say(c, "[세공] 인벤토리 광채: 바이올렛 " + n[0] + " / 오팔 " + n[1] + " / 아다만티움 " + n[2]);
@@ -407,25 +371,6 @@ public class SegongClient implements ClientModInitializer {
             say(c, "  " + (i + 1) + ") " + esc(g.lines.get(i)));
             if (i < 2) say(c, "     조각: " + runs(g.texts.get(i)));
         }
-        return Command.SINGLE_SUCCESS;
-    }
-
-    private static int cmdCount(CommandContext<FabricClientCommandSource> c) {
-        say(c, "[세공] " + Tally.describe(System.currentTimeMillis()));
-        return Command.SINGLE_SUCCESS;
-    }
-
-    private static int cmdCountAdd(CommandContext<FabricClientCommandSource> c, int delta) {
-        Tally.add(delta);
-        save();
-        say(c, "[세공] 오늘 세공 " + Tally.count + "회 (" + (delta > 0 ? "+" : "") + delta + ")");
-        return Command.SINGLE_SUCCESS;
-    }
-
-    private static int cmdCountReset(CommandContext<FabricClientCommandSource> c) {
-        Tally.reset();
-        save();
-        say(c, "[세공] 오늘 세공 횟수를 0으로 되돌렸어요");
         return Command.SINGLE_SUCCESS;
     }
 
@@ -465,11 +410,10 @@ public class SegongClient implements ClientModInitializer {
         out.add("§e[세공] §f세공 도우미 v" + modVersion() + " 도움말");
         out.add(" §e키§f (조작 설정에서 바꿀 수 있어요): " + keyName(toggleKey) + " 켜기/끄기 · " + keyName(gradeKey) + " 등급 바꾸기 · " + keyName(settingsKey) + " 설정 창");
         out.add(" §e/세공 설정§f : 설정 창 열기");
-        out.add(" §e/세공 횟수§f : 오늘 세공 횟수 보기 (§e추가 N§f · §e빼기 N§f · §e초기화§f 로 고치기, N 은 생략하면 1)");
+        out.add(" §e/세공 통계§f : 통계 창 열기 (어떤 보석을 몇 번 세공했는지, 날짜별·등급별. 창에서 고치거나 지울 수도 있어요)");
         out.add(" §e/세공 제보§f : 문제가 생겼을 때, 제보할 내용을 한 번에 복사");
-        out.add(" §e/세공 점검§f : 지금 상태 점검 · §e/세공 기록§f : 최근 일어난 일");
         out.add(" §e/세공 인벤§f : 인벤토리 광채 개수 · §e아이템§f · §e칸§f · §e보석§f : 점검용");
-        out.add(" §7(영어 이름 settings · count · report · check · log · inv 와 /segong 도 그대로 돼요)");
+        out.add(" §7(영어 이름 settings · stats · report · inv 와 /segong 도 그대로 돼요)");
         return out;
     }
 
@@ -506,12 +450,11 @@ public class SegongClient implements ClientModInitializer {
                 + "§f 키, 명령어 목록은 §e/세공 도움말§f 을 입력하세요."), false);
     }
 
-    // ---------------------------------------------------------------- 오늘 세공 횟수
+    // ---------------------------------------------------------------- 오늘 날짜
 
-    /** 0.05초마다: 날짜가 바뀌었으면 횟수를 0부터 다시 센다 (횟수는 카드를 그릴 때 추천 계획이 끝나면 오른다: Tally). */
-    private static void tickTally(MinecraftClient client) {
-        if (client.player == null) return;
-        if (Tally.rollover(Tally.dayKey(java.time.LocalDateTime.now(), Tally.resetHour))) save();
+    /** 오늘 날짜 글자 (초기화 시각 이전이면 전날) */
+    static String today() {
+        return Journal.dayKey(java.time.LocalDateTime.now(), Journal.resetHour);
     }
 
     // ---------------------------------------------------------------- 키 동작
@@ -697,6 +640,7 @@ public class SegongClient implements ClientModInitializer {
                 ctx.drawText(client.textRenderer, f, cx - w / 2, 4, 0xFFFFFFFF, true);
             }
             if (!enabled || Guard.autoOff) return;
+            if (client.currentScreen instanceof StatsScreen) return;     // 통계 창 위에는 카드를 그리지 않는다
             drawBody(client, ctx, mx, my, interactive, now);
         } catch (Throwable e) {
             onDrawError(e);      // 오류가 나도 게임은 계속 돌아간다
@@ -724,7 +668,6 @@ public class SegongClient implements ClientModInitializer {
             inGap = false;
             shownGem = g;
             shownAt = now;
-            lastGemAt = now;
             String st = triple(g.stats[0], g.stats[1], g.stats[2]);
             if (!st.equals(logStats)) {
                 ev("보석 수치 " + (logStats.isEmpty() ? "" : logStats + " → ") + st);
@@ -739,17 +682,11 @@ public class SegongClient implements ClientModInitializer {
             }
         }
         currentGem = g;
-        // 따로 띄우기: 보석이 보이는 동안, 그리고 세공 화면에서 보석이 막 없어진 뒤 30초까지
-        boolean chipOn = tallySep && Tally.show && (g != null || (screenOpen && now - lastGemAt <= TALLY_KEEP_MS));
-        if (g == null) {
-            if (chipOn) Overlay.renderTally(client, ctx, Tally.count, mx, my, interactive);
-            return;
-        }
+        if (g == null) return;
 
         View v = new View();
         v.stats = g.stats;
         v.sig = g.sig;
-        v.tally = (Tally.show && !tallySep) ? Tally.count : -1;
         v.stock = countOrbs(client);      // 보유 = 내 인벤토리를 그대로 센 값 (오른쪽 인벤토리 창과 같다)
         String sk = triple(v.stock[0], v.stock[1], v.stock[2]);
         if (!sk.equals(logStock)) {
@@ -767,9 +704,11 @@ public class SegongClient implements ClientModInitializer {
                 logPlan = rp.plan;
                 ev("추천 새로 정함 #" + rp.plan + " (넣을 개수 " + triple(rp.a, rp.b, rp.c) + ")");
             }
-            if (Tally.observePlan(rp.plan, rp.n)) {      // 추천한 개수를 다 넣어서 목표에 도달하면 +1
-                ev("세공 횟수 +1 → " + Tally.count + "회 (계획 #" + rp.plan + " 끝)");
-                save();
+            if (Tally.observePlan(rp.plan, rp.n)) {      // 추천한 개수를 다 넣어서 목표에 도달하면 기록 한 줄 추가
+                String jn = Journal.nameOf(g.lines), jg = Journal.gradeOf(g.lines, v.lim);
+                Journal.add(today(), jn, jg);              // 어떤 보석을 세공했는지도 남긴다
+                saveJournal();
+                ev("세공 기록: " + jn + " " + jg);
             }
         }
         if (v.lim <= 0) noGradeFrames++;
@@ -777,7 +716,7 @@ public class SegongClient implements ClientModInitializer {
         lastViewAt = now;
         lastScreen = screenOpen ? client.currentScreen.getClass().getSimpleName() : "(화면 없음)";
         Overlay.render(client, ctx, v, mx, my, interactive);
-        if (chipOn) Overlay.renderTally(client, ctx, Tally.count, mx, my, interactive);
+        if (Journal.show) Overlay.renderJournal(client, ctx, false);
     }
 
     /** 설정 화면 미리보기용 예시 */
@@ -788,19 +727,12 @@ public class SegongClient implements ClientModInitializer {
         v.how = "자동";
         v.stock = new long[]{184, 149, 248};
         v.r = Calc.best(11, 31, 18, 212, v.stock);
-        v.tally = (Tally.show && !tallySep) ? Tally.count : -1;
         return v;
     }
 
     static void resetPos() {
         customX = -1f;
         customY = -1f;
-        save();
-    }
-
-    static void resetTallyPos() {
-        tallyX = -1f;
-        tallyY = -1f;
         save();
     }
 
@@ -813,11 +745,8 @@ public class SegongClient implements ClientModInitializer {
         theme = 0;
         icons = true;
         lock = true;
-        Tally.show = true;
-        Tally.resetHour = 0;
-        tallySep = false;
-        tallyX = -1f;
-        tallyY = -1f;
+        Journal.resetHour = 0;
+        Journal.show = true;
         customX = -1f;
         customY = -1f;
         Plan.clear();
@@ -848,7 +777,7 @@ public class SegongClient implements ClientModInitializer {
 
     private static String triple(long a, long b, long c) { return a + "/" + b + "/" + c; }
 
-    /** /세공 점검 에 보여줄 점검 내용 (문제가 생겼을 때 이 글자를 그대로 알려 주면 된다) */
+    /** /세공 제보 에 들어가는 점검 내용 (문제가 생겼을 때 이 글자를 그대로 알려 주면 된다) */
     static List<String> buildCheck(MinecraftClient mc) {
         List<String> out = new ArrayList<>();
         out.add("[세공] 점검 v" + modVersion());
@@ -858,7 +787,7 @@ public class SegongClient implements ClientModInitializer {
         out.add(" 오류: 총 " + Guard.total + "번" + (Guard.total > 0 ? " · 마지막 " + Guard.lastError : "")
                 + (Guard.autoOff ? " · 반복돼서 잠시 꺼짐 (" + keyName(toggleKey) + " 키로 다시 켜기)" : "")
                 + (Guard.iconBroken ? " · 아이콘 그리기 실패로 아이콘 꺼짐" : ""));
-        out.add(" 세공 횟수: " + Tally.describe(System.currentTimeMillis()) + " · 표시 " + (tallySep ? "따로 띄움" : "카드 안"));
+        out.add(" 세공 기록: " + Journal.describe(today()) + " · " + Tally.describe());
         long[] inv = countOrbs(mc, true);
         out.add(" 인벤토리 광채(실제): 바이올렛/오팔/아다만티움 " + triple(inv[0], inv[1], inv[2]));
         out.add(" 깜빡임 방지: 보석을 잠깐 못 읽어서 직전 보석으로 이어 보여준 횟수 " + gapSaved + (gapSaved > 0 ? " (마지막 이유: " + gapWhy + ")" : "")
@@ -943,15 +872,10 @@ public class SegongClient implements ClientModInitializer {
             theme = Math.max(0, Math.min(THEME_NAME.length - 1, Integer.parseInt(pr.getProperty("design", "0"))));
             icons = !"false".equals(pr.getProperty("icons", "true"));
             lock = !"false".equals(pr.getProperty("lock", "true"));
-            Tally.show = !"false".equals(pr.getProperty("tally.on", "true"));
-            Tally.resetHour = Math.max(0, Math.min(23, Integer.parseInt(pr.getProperty("tally.reset", "0"))));
-            Tally.day = pr.getProperty("tally.day", "");
-            Tally.count = Math.max(0, Integer.parseInt(pr.getProperty("tally.count", "0")));
+            Journal.show = !"false".equals(pr.getProperty("journal.on", "true"));
+            Journal.resetHour = Math.max(0, Math.min(23, Integer.parseInt(pr.getProperty("tally.reset", "0"))));   // 예전 이름 그대로 (하루가 바뀌는 시각)
             for (int k = 0; k < 3; k++) orbSnbt[k] = pr.getProperty("icon." + k);
             welcomed = "true".equals(pr.getProperty("welcomed", "false"));
-            tallySep = "true".equals(pr.getProperty("tally.sep", "false"));
-            tallyX = Float.parseFloat(pr.getProperty("tally.px", "-1"));
-            tallyY = Float.parseFloat(pr.getProperty("tally.py", "-1"));
             customX = Float.parseFloat(pr.getProperty("px", "-1"));
             customY = Float.parseFloat(pr.getProperty("py", "-1"));
             for (String k : pr.stringPropertyNames()) {
@@ -959,6 +883,41 @@ public class SegongClient implements ClientModInitializer {
             }
         } catch (Throwable e) {
             // 설정을 못 읽어도 기본값으로 동작
+        }
+    }
+
+    private static Path journalPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("segong-journal.tsv");
+    }
+
+    /** 보석별 기록 파일(config/segong-journal.tsv)을 읽는다. 못 읽으면 빈 기록으로 시작하고 망가진 파일은 .bad 로 남긴다. */
+    private static void loadJournal() {
+        Path p = journalPath();
+        try {
+            if (Files.exists(p)) Journal.parse(Files.readAllLines(p, java.nio.charset.StandardCharsets.UTF_8));
+            if (Journal.prune(today())) saveJournal();
+        } catch (Throwable e) {
+            try {
+                Files.move(p, p.resolveSibling("segong-journal.tsv.bad"), StandardCopyOption.REPLACE_EXISTING);
+            } catch (Throwable ignore) {
+                // 옮기지 못해도 동작에는 지장 없음
+            }
+        }
+    }
+
+    /** 보석별 기록을 파일로 저장한다 (임시 파일에 쓴 뒤 바꿔치기해서, 쓰다가 꺼져도 파일이 깨지지 않게). */
+    static void saveJournal() {
+        try {
+            Path p = journalPath();
+            Path tmp = p.resolveSibling("segong-journal.tsv.tmp");
+            Files.writeString(tmp, Journal.serialize(), java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Throwable e) {
+            // 저장 실패해도 동작에는 지장 없음
         }
     }
 
@@ -972,15 +931,10 @@ public class SegongClient implements ClientModInitializer {
             pr.setProperty("design", String.valueOf(theme));
             pr.setProperty("icons", String.valueOf(icons));
             pr.setProperty("lock", String.valueOf(lock));
-            pr.setProperty("tally.on", String.valueOf(Tally.show));
-            pr.setProperty("tally.reset", String.valueOf(Tally.resetHour));
-            pr.setProperty("tally.day", Tally.day);
-            pr.setProperty("tally.count", String.valueOf(Tally.count));
+            pr.setProperty("journal.on", String.valueOf(Journal.show));
+            pr.setProperty("tally.reset", String.valueOf(Journal.resetHour));
             for (int k = 0; k < 3; k++) if (orbSnbt[k] != null) pr.setProperty("icon." + k, orbSnbt[k]);
             pr.setProperty("welcomed", String.valueOf(welcomed));
-            pr.setProperty("tally.sep", String.valueOf(tallySep));
-            pr.setProperty("tally.px", String.valueOf(tallyX));
-            pr.setProperty("tally.py", String.valueOf(tallyY));
             pr.setProperty("px", String.valueOf(customX));
             pr.setProperty("py", String.valueOf(customY));
             for (Map.Entry<String, Integer> e : learned.entrySet()) pr.setProperty("sig." + e.getKey(), String.valueOf(e.getValue()));
