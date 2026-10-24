@@ -59,7 +59,7 @@ public class SegongClient implements ClientModInitializer {
     private static final int[] LIMITS = {0, 200, 212, 236};          // 0 = 자동
     static final String[] GRADE_NAME = {"자동", "COMMON 200", "NORMAL 212", "RARE 236"};
     static final String[] STYLE_NAME = {"타일형", "카드형", "한 줄형", "슬롯 배지"};
-    private static final long HOVER_MS = 300;                         // 화면이 없을 때 툴팁 표시 유지 시간
+    private static final long HOVER_MS = 300;                         // (미리보기를 켰을 때) 화면이 없을 때 툴팁 표시 유지 시간
     private static final long FLASH_MS = 2500;                        // 알림 문구 표시 시간
 
     /** 화면에 그릴 내용 */
@@ -91,6 +91,7 @@ public class SegongClient implements ClientModInitializer {
     static final String[] THEME_NAME = {"다크 약방", "우드카드", "크림"};
     static boolean icons = true;               // 광채 아이콘 표시
     static boolean lock = true;                // 추천 고정 (처음 정한 목표를 광채 넣는 동안 유지)
+    static boolean hoverShow = false;          // 미리보기: 켜면 세공 창이 아니어도 보석에 마우스만 올리면 카드를 보여준다 (기본은 꺼짐 = 세공 창에서만)
     static final ItemStack[] orbIcon = new ItemStack[3];   // 본 적 있는 광채 아이템 (그림 표시용)
     private static final String[] orbSnbt = new String[3];  // 그 아이템을 글자로 저장한 것 (설정 파일 icon.0~2). 게임을 껐다 켜도 그림을 쓰려고
     private static final boolean[] orbRestoreFailed = new boolean[3];
@@ -98,7 +99,7 @@ public class SegongClient implements ClientModInitializer {
     private static final Map<String, Integer> learned = new HashMap<>();   // 등급 표시 문자 → 한도
 
     private static boolean scanning = false;
-    private static Gem hoverGem;          // 마우스를 올린 마지막 보석
+    private static Gem hoverGem;          // 마우스를 올린 마지막 보석 (미리보기가 켜져 있을 때만 카드에 쓴다)
     private static long hoverAt;
     private static Gem moduleGem;         // 열린 화면의 모듈 칸에서 찾은 보석
     private static long moduleScanAt;
@@ -109,6 +110,8 @@ public class SegongClient implements ClientModInitializer {
     private static String lastScreen = "";
     private static long[] uiOrbs = new long[3];    // 열린 화면의 '인벤토리 밖' 칸에서 본 광채 아이템 개수 (점검용, 계산에는 안 씀)
     private static int uiItems;                    // 열린 화면의 '인벤토리 밖' 칸 중 아이템이 있는 칸 수
+    private static int uiSlots;                    // 열린 화면의 '인벤토리 밖' 칸 전체 수 (점검용)
+    private static String uiTitle = "";            // 열린 화면의 제목 (점검용: 세공 창만 골라내는 데 쓸 수 있는지 보려고)
 
     // 카드 깜빡임 방지: 보석을 잠깐 못 읽어도(칸 갱신·화면 새로고침 순간) 직전 보석으로 이어서 보여준다
     private static final long GEM_GRACE_MS = 1500;
@@ -242,7 +245,7 @@ public class SegongClient implements ClientModInitializer {
         gradeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.segong.grade", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, "category.segong"));
         settingsKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.segong.settings", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_K, "category.segong"));
 
-        // 1) 마우스를 올린 아이템의 툴팁 읽기
+        // 1) 마우스를 올린 아이템의 툴팁 읽기 (미리보기가 꺼져 있으면 /세공 보석 으로 글자를 보여 주는 데만 쓴다)
         ItemTooltipCallback.EVENT.register((stack, context, type, lines) -> {
             if (scanning) return;
             try {
@@ -563,10 +566,16 @@ public class SegongClient implements ClientModInitializer {
         moduleScanAt = now;
         moduleGem = null;
         long[] ui = new long[3];
-        int items = 0;
+        int items = 0, slots = 0;
         if (client.currentScreen instanceof HandledScreen<?> hs) {
+            try {
+                uiTitle = hs.getTitle().getString();
+            } catch (Throwable e) {
+                uiTitle = "?";
+            }
             for (Slot sl : hs.getScreenHandler().slots) {
                 if (sl.inventory == client.player.getInventory()) continue;
+                slots++;
                 ItemStack st = sl.getStack();
                 if (st.isEmpty()) continue;
                 items++;
@@ -584,6 +593,7 @@ public class SegongClient implements ClientModInitializer {
         }
         uiOrbs = ui;
         uiItems = items;
+        uiSlots = slots;
     }
 
     private static long[] orbCache = new long[3];
@@ -653,12 +663,16 @@ public class SegongClient implements ClientModInitializer {
             prevScreenOpen = screenOpen;
             ev(screenOpen ? "화면 열린 상태: " + client.currentScreen.getClass().getSimpleName() : "화면 없음 (게임 화면)");
         }
+        // 기본: 세공 창이 열려 있고 모듈 칸(내 인벤토리 밖 칸)에 보석이 들어 있을 때만 카드를 보여준다.
+        // 마우스만 올린 보석(내 인벤토리·게임 화면)이나 창을 닫은 뒤에는 보여주지 않는다. (설정의 "미리보기"를 켜면 예전처럼 어디서나)
         Gem g = null;
         if (screenOpen) {
             scanModule(client);
             g = moduleGem;
+        } else if (!hoverShow && shownGem != null && now - shownAt > 300) {
+            shownGem = null;      // 창을 닫은 지 잠깐 지나면 직전 보석을 잊는다
         }
-        if (g == null && hoverGem != null && (screenOpen || now - hoverAt <= HOVER_MS)) g = hoverGem;
+        if (g == null && hoverShow && hoverGem != null && (screenOpen || now - hoverAt <= HOVER_MS)) g = hoverGem;
         boolean found = g != null;
         if (found != prevFound) {
             prevFound = found;
@@ -673,8 +687,8 @@ public class SegongClient implements ClientModInitializer {
                 ev("보석 수치 " + (logStats.isEmpty() ? "" : logStats + " → ") + st);
                 logStats = st;
             }
-        } else if (shownGem != null && now - shownAt <= GEM_GRACE_MS) {
-            g = shownGem;       // 잠깐 못 읽었을 뿐이면 카드를 지우지 않는다 (깜빡임 방지)
+        } else if ((screenOpen || hoverShow) && shownGem != null && now - shownAt <= GEM_GRACE_MS) {
+            g = shownGem;       // 창이 열려 있는데 잠깐 못 읽었을 뿐이면 카드를 지우지 않는다 (깜빡임 방지)
             if (!inGap) {
                 inGap = true;
                 gapSaved++;
@@ -745,6 +759,7 @@ public class SegongClient implements ClientModInitializer {
         theme = 0;
         icons = true;
         lock = true;
+        hoverShow = false;
         Journal.resetHour = 0;
         Journal.show = true;
         customX = -1f;
@@ -783,7 +798,7 @@ public class SegongClient implements ClientModInitializer {
         out.add("[세공] 점검 v" + modVersion());
         out.add(" 환경: 마인크래프트 " + modVer("minecraft") + " · Fabric API " + modVer("fabric-api"));
         out.add(" 설정: " + onOff(enabled) + " · " + STYLE_NAME[style] + " · " + THEME_NAME[theme] + " · 아이콘 " + onOff(icons)
-                + " · 추천 고정 " + onOff(lock) + " · 글자 " + String.format("%.2f", scale) + "배 · 등급 " + GRADE_NAME[gradeMode]);
+                + " · 추천 고정 " + onOff(lock) + " · 미리보기 " + onOff(hoverShow) + " · 글자 " + String.format("%.2f", scale) + "배 · 등급 " + GRADE_NAME[gradeMode]);
         out.add(" 오류: 총 " + Guard.total + "번" + (Guard.total > 0 ? " · 마지막 " + Guard.lastError : "")
                 + (Guard.autoOff ? " · 반복돼서 잠시 꺼짐 (" + keyName(toggleKey) + " 키로 다시 켜기)" : "")
                 + (Guard.iconBroken ? " · 아이콘 그리기 실패로 아이콘 꺼짐" : ""));
@@ -809,7 +824,8 @@ public class SegongClient implements ClientModInitializer {
             }
             out.add(" 화면에 보여준 보유: " + triple(v.stock[0], v.stock[1], v.stock[2]));
         }
-        out.add(" 열린 화면의 인벤토리 밖 칸: 아이템 " + uiItems + "칸 · 그중 광채 " + triple(uiOrbs[0], uiOrbs[1], uiOrbs[2]) + " (마지막으로 본 값)");
+        out.add(" 열린 화면의 인벤토리 밖 칸: 전체 " + uiSlots + "칸 · 아이템 " + uiItems + "칸 · 그중 광채 " + triple(uiOrbs[0], uiOrbs[1], uiOrbs[2]) + " (마지막으로 본 값)");
+        out.add(" 마지막으로 연 화면 제목: [" + esc(uiTitle) + "]");
         List<String> plans = Plan.describe();
         out.add(" 기억 중인 계획 " + plans.size() + "개" + (plans.isEmpty() ? "" : " (▶ = 지금 쓰는 것)"));
         out.addAll(plans);
@@ -872,6 +888,7 @@ public class SegongClient implements ClientModInitializer {
             theme = Math.max(0, Math.min(THEME_NAME.length - 1, Integer.parseInt(pr.getProperty("design", "0"))));
             icons = !"false".equals(pr.getProperty("icons", "true"));
             lock = !"false".equals(pr.getProperty("lock", "true"));
+            hoverShow = "true".equals(pr.getProperty("hover.on", "false"));
             Journal.show = !"false".equals(pr.getProperty("journal.on", "true"));
             Journal.resetHour = Math.max(0, Math.min(23, Integer.parseInt(pr.getProperty("tally.reset", "0"))));   // 예전 이름 그대로 (하루가 바뀌는 시각)
             for (int k = 0; k < 3; k++) orbSnbt[k] = pr.getProperty("icon." + k);
@@ -931,6 +948,7 @@ public class SegongClient implements ClientModInitializer {
             pr.setProperty("design", String.valueOf(theme));
             pr.setProperty("icons", String.valueOf(icons));
             pr.setProperty("lock", String.valueOf(lock));
+            pr.setProperty("hover.on", String.valueOf(hoverShow));
             pr.setProperty("journal.on", String.valueOf(Journal.show));
             pr.setProperty("tally.reset", String.valueOf(Journal.resetHour));
             for (int k = 0; k < 3; k++) if (orbSnbt[k] != null) pr.setProperty("icon." + k, orbSnbt[k]);

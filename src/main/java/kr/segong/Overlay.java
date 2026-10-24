@@ -23,6 +23,9 @@ final class Overlay {
     private static boolean dragging, prevDown;
     private static int grabDX, grabDY;
     private static int cardBottom;      // 마지막으로 그린 카드의 아래쪽 y
+    // 설정 화면 미리보기: 카드를 실제 위치 대신 이 자리·이 배율로 그린다 (previewOff 로 끝낸다)
+    private static int forceX = -1, forceY = -1;
+    private static float forceScale = -1f;
     private static int cardX, cardTop, cardW;   // 마지막으로 그린 카드의 왼쪽 x · 위쪽 y · 너비 (보석별 기록 표시를 붙이는 자리)
 
     private Overlay() {}
@@ -96,6 +99,16 @@ final class Overlay {
 
     static void clearHit() { hitW = 0; hitH = 0; cardW = 0; }
 
+    /** 설정 화면 미리보기용: 다음에 그리는 카드와 "오늘한 세공" 표를 (x, y) 에 배율 s 로 그린다. */
+    static void previewAt(int x, int y, float s) { forceX = x; forceY = y; forceScale = s; }
+
+    static void previewOff() { forceX = -1; forceY = -1; forceScale = -1f; }
+
+    /** 카드의 배율 1 크기 {폭, 높이} (설정 화면에서 자리를 정하려고) */
+    static int[] cardSize(MinecraftClient mc, DrawContext ctx, SegongClient.View v) {
+        return layout(new Pen(mc.textRenderer, ctx, false), v, SegongClient.style, null);
+    }
+
     /** 광채 그림 (설정이 꺼져 있거나 인벤토리에서 못 봤으면 null) */
     private static ItemStack icon(int k) {
         return SegongClient.iconFor(k);
@@ -132,13 +145,15 @@ final class Overlay {
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
 
     static void render(MinecraftClient mc, DrawContext ctx, SegongClient.View v, int mx, int my, boolean interactive) {
-        float s = SegongClient.scale;
+        float s = forceScale > 0 ? forceScale : SegongClient.scale;
         int style = SegongClient.style;
         int[] sz = layout(new Pen(mc.textRenderer, ctx, false), v, style, null);
         int sw = mc.getWindow().getScaledWidth(), sh = mc.getWindow().getScaledHeight();
         int pw = Math.round(sz[0] * s), ph = Math.round(sz[1] * s);
         int[] xy;
-        if (SegongClient.customX >= 0 && SegongClient.customY >= 0) {
+        if (forceX >= 0) {
+            xy = new int[]{forceX, forceY};
+        } else if (SegongClient.customX >= 0 && SegongClient.customY >= 0) {
             xy = new int[]{clamp(Math.round(SegongClient.customX * sw), 0, Math.max(0, sw - pw)),
                            clamp(Math.round(SegongClient.customY * sh), 0, Math.max(0, sh - ph))};
         } else {
@@ -234,7 +249,7 @@ final class Overlay {
         int lines = rows.isEmpty() ? 1 : rows.size() + (more > 0 ? 1 : 0);
         int h = 5 + 11 + lines * 10 + 5;
 
-        float ps = Math.min(1f, SegongClient.scale);
+        float ps = Math.min(1f, forceScale > 0 ? forceScale : SegongClient.scale);
         int pw = Math.round(w * ps), ph = Math.round(h * ps);
         int sw = mc.getWindow().getScaledWidth(), sh = mc.getWindow().getScaledHeight();
         int x = cardX;

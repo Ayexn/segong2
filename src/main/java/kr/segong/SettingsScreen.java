@@ -52,7 +52,8 @@ class SettingsScreen extends Screen {
         Runnable act;
     }
 
-    private static final int ROW_GAP = 19;        // 줄 간격
+    private static final int ROW_GAP = 19;        // 줄 간격 (화면이 낮으면 아래서 줄여 씀)
+    private int rowGap = ROW_GAP;
     private final Screen parent;
     private final List<Btn> btns = new ArrayList<>();
     private int pl, pt, pw, ph;          // 패널 위치/크기
@@ -61,6 +62,7 @@ class SettingsScreen extends Screen {
     private boolean sliderDrag;
     private boolean confirmReset;     // "설정 기본값으로" 를 한 번 눌러 확인 대기 중
     private Btn resetBtn;
+    private Btn hoverBtn;
 
     SettingsScreen(Screen parent) {
         super(Text.literal("세공 도우미 설정"));
@@ -80,11 +82,13 @@ class SettingsScreen extends Screen {
         btns.clear();
         applyTheme();
         pw = Math.min(width - 16, 400);
-        ph = Math.min(height - 16, 272);
+        ph = Math.min(height - 16, 291);
         pl = (width - pw) / 2;
         pt = (height - ph) / 2;
         cx0 = pl + (apo ? 96 : 92);
-        int y = pt + (apo ? 34 : 38), gap = ROW_GAP;
+        // 화면이 낮으면 줄 사이를 조금 좁혀서 아래 글씨와 안 겹치게 (줄 10개)
+        rowGap = Math.max(16, Math.min(ROW_GAP, (ph - (apo ? 34 : 38) - (apo ? 78 : 70)) / 9));
+        int y = pt + (apo ? 34 : 38), gap = rowGap;
 
         // 동작
         int x = cx0;
@@ -119,6 +123,12 @@ class SettingsScreen extends Screen {
         b = add(x, y, "켜짐", () -> SegongClient.lock, () -> { SegongClient.lock = true; Plan.clear(); SegongClient.save(); }, false);
         x += b.w + 4;
         add(x, y, "꺼짐", () -> !SegongClient.lock, () -> { SegongClient.lock = false; Plan.clear(); SegongClient.save(); }, false);
+
+        // 미리보기 (끄면 세공 창에서만, 켜면 보석에 마우스만 올려도 카드가 뜬다)
+        y += gap; x = cx0;
+        b = add(x, y, "켜짐", () -> SegongClient.hoverShow, () -> { SegongClient.hoverShow = true; SegongClient.save(); }, false);
+        x += b.w + 4;
+        hoverBtn = add(x, y, "꺼짐", () -> !SegongClient.hoverShow, () -> { SegongClient.hoverShow = false; SegongClient.save(); }, false);
 
         // 오늘한 세공 (카드 아래에 오늘 어떤 보석을 몇 번 했는지 작게 표시) + 통계 창 열기
         y += gap; x = cx0;
@@ -251,8 +261,8 @@ class SettingsScreen extends Screen {
         }
 
         // 줄 이름
-        int gap = ROW_GAP, y = pt + (apo ? 34 : 38), lx = pl + (apo ? 18 : 14);
-        String[] labels = {"동작", "표시 방식", "디자인", "아이콘", "추천 고정", "오늘한 세공", "글자 크기", "위치", "등급"};
+        int gap = rowGap, y = pt + (apo ? 34 : 38), lx = pl + (apo ? 18 : 14);
+        String[] labels = {"동작", "표시 방식", "디자인", "아이콘", "추천 고정", "미리보기", "오늘한 세공", "글자 크기", "위치", "등급"};
         for (int i = 0; i < labels.length; i++) {
             c.drawText(textRenderer, labels[i], lx, y + gap * i + 5, TXT, wood);
         }
@@ -295,6 +305,11 @@ class SettingsScreen extends Screen {
             }
         }
 
+        // 미리보기 줄 오른쪽에 안내
+        if (hoverBtn != null) {
+            c.drawText(textRenderer, SegongClient.hoverShow ? "인벤토리 등 어디서나 마우스만 올려도" : "세공 창에서만 (모듈 칸에 보석이 있을 때)", hoverBtn.x + hoverBtn.w + 10, hoverBtn.y + 5, INFO, wood);
+        }
+
         // 아래 안내 (광채 개수는 그림이 있으면 그림 + 숫자로)
         long[] n = SegongClient.countOrbs(client);
         int ly = pt + ph - (apo ? 60 : 52);
@@ -329,11 +344,37 @@ class SettingsScreen extends Screen {
                 + " 등급 · " + SegongClient.keyName(SegongClient.settingsKey) + " 설정 (키는 조작 설정에서 변경)";
         c.drawText(textRenderer, l2, lx, pt + ph - (apo ? 48 : 40), SUB, wood);
 
-        // 실제 위치 미리보기
+        drawPreview(c);
+    }
+
+    /**
+     * 카드 미리보기: 설정 창과 겹치지 않게 창 옆 빈 곳(더 넓은 쪽)에 그린다. 자리가 좁으면 그 폭에 맞게 줄여서 그리고,
+     * 너무 좁으면(절반 크기도 안 들어가면) 그리지 않는다. 실제 카드 위치·크기와는 다르다.
+     */
+    private void drawPreview(DrawContext c) {
         try {
-            Overlay.render(client, c, SegongClient.sampleView(), -1, -1, false);
-            if (Journal.show) Overlay.renderJournal(client, c, true);
+            SegongClient.View v = SegongClient.sampleView();
+            int[] sz = Overlay.cardSize(client, c, v);
+            int gapW = 6;
+            int leftRoom = pl - gapW * 2, rightRoom = width - (pl + pw) - gapW * 2;
+            boolean left = leftRoom >= rightRoom;
+            int room = left ? leftRoom : rightRoom;
+            float s = Math.min(SegongClient.scale, room / (float) Math.max(1, sz[0]));
+            if (s < 0.5f) return;
+            int cw = Math.round(sz[0] * s);
+            int x = left ? pl - gapW - cw : pl + pw + gapW;
+            String cap = s < SegongClient.scale - 0.01f ? "미리보기 (축소)" : "미리보기";
+            int capW = textRenderer.getWidth(cap);
+            c.drawText(textRenderer, cap, left ? Math.max(2, x + cw - capW) : x, pt, SUB, wood);
+            Overlay.previewAt(x, pt + 12, s);
+            try {
+                Overlay.render(client, c, v, -1, -1, false);
+                if (Journal.show) Overlay.renderJournal(client, c, true);
+            } finally {
+                Overlay.previewOff();
+            }
         } catch (Throwable e) {
+            Overlay.previewOff();
             SegongClient.noteError(e);     // 미리보기가 실패해도 설정 화면은 계속 쓸 수 있게
         }
     }
